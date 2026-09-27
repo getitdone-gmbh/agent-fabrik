@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/netguard"
+	"github.com/getitdone-gmbh/agentd/internal/netguard"
 )
 
 // HTTPConfig configures an HTTP connector. It can expose declared endpoints

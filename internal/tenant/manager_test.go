@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/testutil"
+	"github.com/getitdone-gmbh/agentd/internal/testutil"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/agent"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/store"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
+	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/store"
 )
 
 func newManager(t *testing.T, extra string) (*Manager, store.Store) {

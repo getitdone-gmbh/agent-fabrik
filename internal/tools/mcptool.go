@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/mcp"
+	"github.com/getitdone-gmbh/agentd/internal/mcp"
 )
 
 // MCPConfig configures an MCP server connection. Set URL for streamable

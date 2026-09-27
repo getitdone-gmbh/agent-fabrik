@@ -9,12 +9,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/agent"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/mail"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/netguard"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tools"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
+	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/mail"
+	"github.com/getitdone-gmbh/agentd/internal/netguard"
+	"github.com/getitdone-gmbh/agentd/internal/tools"
 )
 
 // App is the running set of agents.

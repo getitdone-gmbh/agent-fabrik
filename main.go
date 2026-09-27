@@ -19,12 +19,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/agent"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/app"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/server"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/store"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tenant"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
+	"github.com/getitdone-gmbh/agentd/internal/app"
+	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/server"
+	"github.com/getitdone-gmbh/agentd/internal/store"
+	"github.com/getitdone-gmbh/agentd/internal/tenant"
 )
 
 var version = "dev"

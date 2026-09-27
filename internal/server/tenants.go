@@ -9,9 +9,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/store"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tenant"
+	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/store"
+	"github.com/getitdone-gmbh/agentd/internal/tenant"
 )
 
 // Self-service configuration API for tenants plus the admin API.

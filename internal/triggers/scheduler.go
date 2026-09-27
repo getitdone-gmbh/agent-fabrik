@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/config"
 )
 
 // Scheduler fires cron, interval and IMAP triggers for any number of

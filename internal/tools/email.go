@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	imail "github.com/getitdone-gmbh/itdone-agent-runtime/internal/mail"
+	imail "github.com/getitdone-gmbh/agentd/internal/mail"
 )
 
 // EmailConfig configures an email connector (SMTP, IMAP, or both).

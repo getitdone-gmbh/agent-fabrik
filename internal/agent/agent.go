@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/metrics"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tools"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/metrics"
+	"github.com/getitdone-gmbh/agentd/internal/tools"
 )
 
 // Config defines an agent.

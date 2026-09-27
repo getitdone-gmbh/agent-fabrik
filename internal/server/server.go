@@ -18,15 +18,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/agent"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/app"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/mcp"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/metrics"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/store"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tenant"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tools"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
+	"github.com/getitdone-gmbh/agentd/internal/app"
+	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/mcp"
+	"github.com/getitdone-gmbh/agentd/internal/metrics"
+	"github.com/getitdone-gmbh/agentd/internal/store"
+	"github.com/getitdone-gmbh/agentd/internal/tenant"
+	"github.com/getitdone-gmbh/agentd/internal/tools"
 )
 
 // Version is set at build time.

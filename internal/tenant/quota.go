@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/store"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/store"
 )
 
 // bucket is a token-bucket rate limiter (runs per minute).

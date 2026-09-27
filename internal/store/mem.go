@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/agent"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
 )
 
 // Mem keeps everything in memory. With a path, tenant data (not sessions)

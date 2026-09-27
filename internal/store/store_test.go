@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/testutil"
+	"github.com/getitdone-gmbh/agentd/internal/testutil"
 	"path/filepath"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/config"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
 )
 
 // Run the Postgres suite with:

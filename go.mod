@@ -1,4 +1,4 @@
-module github.com/getitdone-gmbh/itdone-agent-runtime
+module github.com/getitdone-gmbh/agentd
 
 go 1.25.0
 

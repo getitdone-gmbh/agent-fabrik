@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
 )
 
 // Store persists conversation history per agent and session.

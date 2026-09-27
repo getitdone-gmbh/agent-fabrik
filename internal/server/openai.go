@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/agent"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
 )
 
 // OpenAI-compatible surface: any OpenAI client can talk to an agent by using

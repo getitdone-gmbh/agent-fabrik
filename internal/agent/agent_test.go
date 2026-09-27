@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/llm"
-	"github.com/getitdone-gmbh/itdone-agent-runtime/internal/tools"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agentd/internal/tools"
 )
 
 // scripted returns canned responses and records requests.
