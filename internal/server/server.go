@@ -176,6 +176,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		id, admin, err := s.resolve(r)
 		if err != nil {
 			if !errors.Is(err, tenant.ErrUnauthorized) {
+				slog.Warn("authentication failed", "path", r.URL.Path, "err", err)
 				writeError(w, http.StatusServiceUnavailable, "authentication backend unavailable")
 				return
 			}
