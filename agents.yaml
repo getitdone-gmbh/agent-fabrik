@@ -23,13 +23,13 @@
 # For real deployments see examples/full.yaml and examples/multitenant.yaml.
 
 server:
-  auth_token: ${AGENT_RUNTIME_TOKEN}
+  auth_token: ${AGENT_RUNTIME_TOKEN:-}
   cors_origins: ["${CORS_ORIGINS:-}"] # comma-separated, e.g. https://itdone.cloud
 
 providers:
   default:
     type: ${LLM_PROVIDER:-mistral}
-    api_key: ${LLM_API_KEY}
+    api_key: ${LLM_API_KEY:-}
     model: ${LLM_MODEL:-}
     base_url: ${LLM_BASE_URL:-}
 

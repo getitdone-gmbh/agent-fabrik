@@ -165,6 +165,12 @@ func TestEmbeddedConfigTenancyFromEnv(t *testing.T) {
 	t.Setenv("TENANCY_ENABLED", "true")
 	t.Setenv("DATABASE_URL", "postgres://db")
 	b, _ := os.ReadFile("../../agents.yaml")
+	// Without the key the error says which variable to set, before connecting.
+	t.Setenv("RUNTIME_SECRET_KEY", "")
+	if _, err := Parse(b); err == nil || !strings.Contains(err.Error(), "RUNTIME_SECRET_KEY") {
+		t.Fatalf("missing key not reported: %v", err)
+	}
+	t.Setenv("RUNTIME_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	cfg, err := Parse(b)
 	if err != nil {
 		t.Fatal(err)

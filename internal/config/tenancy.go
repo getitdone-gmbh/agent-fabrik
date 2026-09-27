@@ -239,10 +239,16 @@ func (t TenancyConfig) validate(providers map[string]llm.Config) []string {
 		}
 	case "postgres":
 		if t.Store.URL == "" {
-			errs = append(errs, "tenancy.store.url is required for type postgres")
+			errs = append(errs, "tenancy.store.url is required for type postgres (built-in config: DATABASE_URL)")
 		}
 	default:
 		errs = append(errs, "tenancy.store.type must be memory, file or postgres")
+	}
+	if (t.Store.Type == "postgres" || t.Store.Type == "file") && t.SecretKey == "" {
+		// Checked here, before any connection, so a missing key is the one
+		// clear error at startup instead of a crash after connecting.
+		errs = append(errs, "tenancy.secret_key is required with a persistent store: it encrypts tenant secrets "+
+			"(built-in config: RUNTIME_SECRET_KEY, create with: openssl rand -base64 32, keep it safe)")
 	}
 	if a := t.ExternalAuth; a.Enabled {
 		if !strings.HasPrefix(a.UserinfoURL, "https://") && !strings.HasPrefix(a.UserinfoURL, "http://") {

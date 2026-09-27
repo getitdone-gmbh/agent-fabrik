@@ -100,6 +100,18 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 		cc := cfg.Connectors[name]
 		var common connectorCommon
 		_ = cc.Decode(&common)
+		if common.Optional && cc.Type == "mcp" {
+			// An optional MCP connector without url/command is simply not
+			// configured (e.g. MCP_URL unset): skip it quietly, it is no fault.
+			var target struct {
+				URL     string   `yaml:"url"`
+				Command []string `yaml:"command"`
+			}
+			if _ = cc.Decode(&target); target.URL == "" && len(target.Command) == 0 {
+				log.Debug("optional connector not configured, skipped", "connector", name)
+				continue
+			}
+		}
 		conn, err := newConnector(name, cc, log, opts.Guarded)
 		if err == nil {
 			cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
