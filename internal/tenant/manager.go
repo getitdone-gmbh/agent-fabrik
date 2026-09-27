@@ -106,7 +106,14 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, system *app.Ap
 		keys:     newKeyCache(),
 	}
 	for _, name := range cfg.Tenancy.SharedProviders {
-		p, err := llm.New(name, cfg.Providers[name])
+		pc := cfg.Providers[name]
+		if pc.APIKey == "" && pc.BaseURL == "" && pc.Type != "ollama" {
+			// A hosted provider without a key would fail every run; tenants
+			// then bring their own key instead.
+			log.Warn("shared provider has no api_key, not offered to tenants", "provider", name)
+			continue
+		}
+		p, err := llm.New(name, pc)
 		if err != nil {
 			return nil, err
 		}
@@ -127,6 +134,18 @@ func (m *Manager) Scheduler() *triggers.Scheduler { return m.sched }
 
 // Store returns the backing store.
 func (m *Manager) Store() store.Store { return m.st }
+
+// SharedProviders lists the shared providers this tenant may use.
+func (m *Manager) SharedProviders(t *store.Tenant) []string {
+	names := []string{}
+	if m.Limits(t).AllowsShared() {
+		for n := range m.shared {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+	}
+	return names
+}
 
 // IsLeader reports whether this replica currently runs the scheduler.
 func (m *Manager) IsLeader() bool { return m.leader.Load() }

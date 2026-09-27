@@ -91,7 +91,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	out := map[string]any{"tenant": t, "limits": s.m.Limits(t), "admin": isAdmin(r)}
+	out := map[string]any{"tenant": t, "limits": s.m.Limits(t), "admin": isAdmin(r), "shared_providers": s.m.SharedProviders(t)}
 	if id != tenant.System {
 		if u, err := s.m.Usage(r.Context(), id); err == nil {
 			out["usage"] = u
