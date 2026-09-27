@@ -25,7 +25,7 @@ services:
       EXTERNAL_AUTH_ID_FIELD: id
       EXTERNAL_AUTH_PLAN_FIELD: tier
       EXTERNAL_AUTH_TENANT_PREFIX: itd-
-      CORS_ORIGINS: https://itdone.cloud,https://www.itdone.cloud
+      CORS_ORIGINS: https://dashboard.itdone.cloud,https://itdone.cloud,https://www.itdone.cloud
       GOMEMLIMIT: 200MiB
 
 addons:
