@@ -1,0 +1,50 @@
+# Minimal Kubernetes deployment. Create the secret first:
+#   kubectl create secret generic agentd \
+#     --from-literal=AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24) \
+#     --from-literal=RUNTIME_SECRET_KEY=$(openssl rand -base64 32) \
+#     --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/agentd?sslmode=require' \
+#     --from-literal=LLM_API_KEY=...
+# Two replicas share the load; one of them (Postgres advisory lock) runs the
+# scheduler and fails over automatically.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentd
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: agentd}
+  template:
+    metadata:
+      labels: {app: agentd}
+    spec:
+      securityContext: {runAsNonRoot: true}
+      containers:
+        - name: agentd
+          image: ghcr.io/OWNER/agentd:latest   # build with the Dockerfile
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: TENANCY_ENABLED, value: "true"}
+            - {name: LLM_PROVIDER, value: mistral}
+            - {name: GOMEMLIMIT, value: 200MiB}
+          envFrom:
+            - secretRef: {name: agentd}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /readyz, port: 8080}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentd
+spec:
+  selector: {app: agentd}
+  ports: [{port: 80, targetPort: 8080}]

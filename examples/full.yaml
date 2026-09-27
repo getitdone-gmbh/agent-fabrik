@@ -1,0 +1,197 @@
+# Full reference configuration for agentd.
+# Values like ${VAR}, ${VAR:-default}, ${VAR:?error} and ${file:/path} are
+# expanded from the environment (after YAML parsing, so secrets can contain
+# any characters). Use "$${" for a literal "${".
+
+server:
+  addr: ":${PORT:-8080}"
+  auth_token: ${AGENT_RUNTIME_TOKEN:?set a token to protect the API}
+  # auth_tokens: [...]          # additional accepted tokens
+  max_concurrent_runs: 16       # global cap on simultaneous agent runs
+  # cors_origins: ["https://app.example.com"]
+  # mcp: true                   # serve agents as MCP tools at /mcp
+  # openai_api: true            # serve /v1/chat/completions and /v1/models
+
+memory:
+  type: memory                  # or "file" with dir: /data/sessions (persistent volume)
+  ttl: 24h
+  max_sessions: 1000
+
+log:
+  level: info                   # debug | info | warn | error
+  format: json                  # json | text
+
+# ---------------------------------------------------------------------------
+# LLM providers. Any number; agents pick one by name.
+# ---------------------------------------------------------------------------
+providers:
+  claude:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY:-}
+    model: claude-opus-5
+    # effort: high              # low | medium | high | xhigh | max
+    # fallbacks: default        # server-side refusal fallback; "off" to disable
+    # max_tokens: 16000
+
+  mistral:
+    type: mistral
+    api_key: ${MISTRAL_API_KEY:-}
+    model: mistral-medium-latest
+
+  local:
+    type: ollama
+    base_url: ${OLLAMA_URL:-http://ollama:11434}
+    model: qwen3
+    # context_size: 16384
+    # keep_alive: 10m
+
+  # Other OpenAI-compatible presets: openai, groq, openrouter, gemini,
+  # deepseek, together, scaleway, ionos, xai, lmstudio, vllm.
+  # Or any endpoint:
+  # custom:
+  #   type: openai-compatible
+  #   base_url: https://my-gateway.example.com/v1
+  #   api_key: ${GATEWAY_KEY}
+  # Azure OpenAI:
+  #   type: openai-compatible
+  #   base_url: https://<res>.openai.azure.com/openai/deployments/<deployment>
+  #   api_version: 2024-10-21
+  #   api_key: ${AZURE_OPENAI_KEY}
+
+# ---------------------------------------------------------------------------
+# Connectors provide tools. Tool names seen by the model are
+# <connector>__<tool>; agents select them with globs like "mail.*".
+# A built-in "system" connector provides system.now.
+# ---------------------------------------------------------------------------
+connectors:
+  # Any remote MCP server (streamable HTTP), e.g. your CRM, ticketing or
+  # hosting platform. include/exclude filter the exposed tools.
+  crm:
+    type: mcp
+    url: ${CRM_MCP_URL:-https://mcp.example.com/mcp}
+    headers:
+      Authorization: Bearer ${CRM_MCP_TOKEN:-}
+    include: ["list_*", "get_*"]   # read-only subset
+    optional: true
+
+  # Any stdio MCP server (needs the binary/runtime in the image).
+  # files:
+  #   type: mcp
+  #   command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+  #   env: {NODE_ENV: production}
+
+  # Typed HTTP endpoints become individual tools.
+  github:
+    type: http
+    base_url: https://api.github.com
+    headers:
+      Authorization: Bearer ${GITHUB_TOKEN:-}
+      Accept: application/vnd.github+json
+    endpoints:
+      - name: get_issue
+        description: Get a GitHub issue.
+        method: GET
+        path: /repos/{owner}/{repo}/issues/{number}
+        params:
+          owner: {description: Repository owner}
+          repo: {description: Repository name}
+          number: {type: integer}
+      - name: comment_issue
+        description: Comment on a GitHub issue.
+        method: POST
+        path: /repos/{owner}/{repo}/issues/{number}/comments
+        params:
+          owner: {}
+          repo: {}
+          number: {type: integer}
+          body: {description: Markdown comment, required: true}
+
+  # Generic HTTP requests, restricted to an allowlist. Private/loopback
+  # addresses are blocked unless allow_private: true.
+  web:
+    type: http
+    allow_hosts: ["*.wikipedia.org", "api.open-meteo.com"]
+    allow_methods: [GET]
+    max_response_bytes: 65536
+
+  # Email: SMTP for sending, IMAP for reading (either or both).
+  mail:
+    type: email
+    smtp:
+      host: ${SMTP_HOST:-smtp.example.com}
+      port: 587
+      tls: starttls               # starttls | implicit (465) | none
+      username: ${SMTP_USER:-}
+      password: ${SMTP_PASSWORD:-}
+      from: "Support Bot <support@example.com>"
+    imap:
+      host: ${IMAP_HOST:-imap.example.com}
+      port: 993
+      tls: implicit               # implicit | starttls | none
+      username: ${IMAP_USER:-}
+      password: ${IMAP_PASSWORD:-}
+      mailbox: INBOX
+    allow_recipients: ["*@example.com"]   # restrict who the agent may email
+    optional: true
+
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+agents:
+  # Answers support mail automatically and can look up customer data.
+  support:
+    description: Answers customer support emails.
+    provider: mistral
+    system: |
+      You are the support agent of Example GmbH. Answer in the customer's
+      language, politely and concisely. Use the crm tools to look up the
+      customer's account when relevant. If the email is spam or
+      needs no answer, reply exactly NO_REPLY.
+    tools: ["crm.*", "system.*"]
+    max_steps: 8
+    triggers:
+      - type: imap
+        connector: mail
+        every: 1m
+        allow_from: ["*@example.com"]   # optional sender allowlist
+        # reply: true      # send the final answer as reply (default)
+        # mark_read: true  # default
+
+  # Daily report on weekdays, keeps memory in a fixed session.
+  reporter:
+    description: Sends a morning status report.
+    provider: claude
+    system: You write short, factual status reports.
+    tools: ["crm.*", "mail.send_email", "system.*"]
+    triggers:
+      - type: cron
+        schedule: "0 8 * * 1-5"
+        timezone: Europe/Berlin
+        session: daily-report
+        prompt: |
+          It is {{date}}. Summarize yesterday's CRM activity and email it to
+          ops@example.com.
+
+  # Reacts to GitHub webhooks (HMAC-verified via X-Hub-Signature-256).
+  triage:
+    description: Triages new GitHub issues.
+    provider: local
+    system: You label and answer new GitHub issues briefly and helpfully.
+    tools: ["github.*"]
+    triggers:
+      - type: webhook
+        name: github            # POST /v1/hooks/triage/github
+        secret: ${GITHUB_WEBHOOK_SECRET:-change-me}
+        async: true
+        prompt: A GitHub event arrived. If it is a newly opened issue, comment a helpful first response.
+
+  # Plain chat agent, reachable via /v1/agents/chat/run, /v1/chat/completions
+  # (model "chat") and MCP (/mcp tool "chat").
+  chat:
+    description: General assistant.
+    provider: claude
+    tools: ["web.*", "system.*"]
+    history_limit: 40
+    # max_steps: 12  tool_timeout_seconds: 60  run_timeout_seconds: 600
+    # max_tool_output: 20000  parallel_tools: 4  max_tokens: ...
+    # expose: false  # hide from HTTP/MCP (trigger-only agents)

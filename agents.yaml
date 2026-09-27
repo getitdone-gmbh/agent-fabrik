@@ -1,0 +1,86 @@
+# Default configuration, embedded into the binary and used when no other
+# config is provided. Everything is driven by environment variables so the
+# same image runs anywhere with just env vars / secrets set.
+#
+# Single-tenant (one set of agents):
+#   LLM_PROVIDER         anthropic | mistral | openai | ollama | groq | gemini | openrouter | ...
+#   LLM_API_KEY          provider API key
+#   LLM_MODEL            model name (optional; provider default otherwise)
+#   LLM_BASE_URL         override endpoint (optional; e.g. http://ollama:11434)
+#   AGENT_RUNTIME_TOKEN  bearer token protecting this runtime's API (admin token)
+#   MCP_URL, MCP_TOKEN   optional remote MCP server whose tools the assistant may use
+#   AGENT_SYSTEM_PROMPT  custom instructions (optional)
+#
+# Multi-tenant (many users manage their own agents in this one process):
+#   TENANCY_ENABLED=true
+#   DATABASE_URL         Postgres connection URL
+#   RUNTIME_SECRET_KEY   32 random bytes, base64 (openssl rand -base64 32)
+#   TENANT_SHARED_LLM    true -> tenants may use the LLM above without their own key
+#   EXTERNAL_AUTH_USERINFO_URL  optional: let users of your IdP log in with their
+#                        own token (OIDC userinfo); also EXTERNAL_AUTH_ID_FIELD,
+#                        EXTERNAL_AUTH_PLAN_FIELD, EXTERNAL_AUTH_TENANT_PREFIX
+#
+# For real deployments see examples/full.yaml and examples/multitenant.yaml.
+
+server:
+  auth_token: ${AGENT_RUNTIME_TOKEN}
+
+providers:
+  default:
+    type: ${LLM_PROVIDER:-mistral}
+    api_key: ${LLM_API_KEY}
+    model: ${LLM_MODEL:-}
+    base_url: ${LLM_BASE_URL:-}
+
+connectors:
+  mcp:
+    type: mcp
+    url: ${MCP_URL:-}
+    headers:
+      Authorization: Bearer ${MCP_TOKEN:-}
+    optional: true # skipped when MCP_URL is not set
+
+agents:
+  assistant:
+    description: General assistant.
+    system: ${AGENT_SYSTEM_PROMPT:-You are a helpful assistant. Be concise. Use tools when they help and never invent tool results.}
+    tools: ["system.*", "mcp.*"]
+
+tenancy:
+  enabled: ${TENANCY_ENABLED:-false}
+  store:
+    type: postgres
+    url: ${DATABASE_URL:-}
+  secret_key: ${RUNTIME_SECRET_KEY:-}
+  shared_providers: [default]
+  external_auth:
+    enabled: ${EXTERNAL_AUTH_ENABLED:-false}
+    userinfo_url: ${EXTERNAL_AUTH_USERINFO_URL:-}
+    id_field: ${EXTERNAL_AUTH_ID_FIELD:-sub}
+    plan_field: ${EXTERNAL_AUTH_PLAN_FIELD:-}
+    tenant_prefix: ${EXTERNAL_AUTH_TENANT_PREFIX:-ext-}
+    plan_map: {free: free, pro: pro}
+  default_plan: free
+  plans:
+    free:
+      max_agents: 5
+      max_connectors: 5
+      max_triggers: 5
+      max_concurrent_runs: 1
+      runs_per_minute: 10
+      monthly_tokens: 500000
+      max_steps: 8
+      min_schedule_interval: 15m
+      min_poll_interval: 5m
+      shared_providers: ${TENANT_SHARED_LLM:-false}
+    pro:
+      max_agents: 100
+      max_connectors: 50
+      max_triggers: 100
+      max_concurrent_runs: 5
+      runs_per_minute: 120
+      monthly_tokens: 20000000
+      max_steps: 20
+      min_schedule_interval: 1m
+      min_poll_interval: 1m
+      shared_providers: ${TENANT_SHARED_LLM:-false}

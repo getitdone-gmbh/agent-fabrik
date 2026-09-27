@@ -1,0 +1,80 @@
+# One runtime process serving many tenants (users). Tenants manage their own
+# providers, connectors, agents and secrets through the API; agents cost a
+# database row until they run. Deploy one (or a few) replicas, not one pod
+# per agent.
+
+server:
+  addr: ":${PORT:-8080}"
+  auth_token: ${AGENT_RUNTIME_TOKEN:?admin token required} # admin API + system agents
+  max_concurrent_runs: 64      # global cap across all tenants
+
+providers:
+  # Operator-paid provider tenants may use without their own API key
+  # (listed in shared_providers, allowed per plan, capped by monthly_tokens).
+  mistral:
+    type: mistral
+    api_key: ${MISTRAL_API_KEY:-}
+  # An in-cluster model server, e.g. Ollama (see allow_networks below).
+  local:
+    type: ollama
+    base_url: http://ollama.ai.svc.cluster.local:11434
+    model: qwen3
+
+tenancy:
+  enabled: true
+  store:
+    type: postgres             # memory | file (path: /data/tenants.json) | postgres
+    url: ${DATABASE_URL:?DATABASE_URL required}
+  secret_key: ${RUNTIME_SECRET_KEY:?openssl rand -base64 32}
+  shared_providers: [mistral, local]
+  # Tenant connections are blocked from private/cluster networks (SSRF
+  # protection). Explicitly allow shared internal services here if tenants
+  # should reach them with their own connectors.
+  # allow_networks: ["10.43.12.0/24"]
+
+  # Users of your identity provider or platform authenticate with their own
+  # token (JWT or API key), validated via a userinfo endpoint; each user
+  # becomes a tenant automatically. Works with OIDC providers (Keycloak,
+  # Zitadel, Auth0, Google: id_field "sub") and custom "who am I" APIs.
+  external_auth:
+    enabled: true
+    userinfo_url: https://auth.example.com/realms/main/protocol/openid-connect/userinfo
+    id_field: sub
+    name_field: email
+    plan_field: plan              # optional: a field/claim selecting the plan
+    plan_map: {free: free, pro: pro}
+    tenant_prefix: ext-
+    cache_ttl: 5m
+
+  default_plan: free
+  plans:
+    free:
+      max_agents: 5
+      max_connectors: 5
+      max_providers: 3
+      max_secrets: 10
+      max_triggers: 5
+      max_concurrent_runs: 1
+      runs_per_minute: 10
+      monthly_tokens: 500000
+      max_steps: 8
+      min_schedule_interval: 15m
+      min_poll_interval: 5m
+      shared_providers: true
+      connector_types: [mcp, http, email, smtp, imap]
+    pro:
+      max_agents: 200
+      max_concurrent_runs: 8
+      runs_per_minute: 300
+      monthly_tokens: 50000000
+      max_steps: 25
+      min_schedule_interval: 1m
+      min_poll_interval: 1m
+
+  runtime_idle_ttl: 10m        # unload idle tenant runtimes
+  max_cached_runtimes: 20000
+  scheduler_workers: 64        # concurrent trigger executions
+  session_ttl: 72h
+
+# System agents (optional) are served with the admin token.
+agents: {}

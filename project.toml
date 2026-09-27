@@ -1,0 +1,11 @@
+# Build settings for Cloud Native Buildpacks (pack, kpack, Heroku, ...).
+[_]
+schema-version = "0.2"
+
+[[io.buildpacks.build.env]]
+name = "BP_GO_BUILD_LDFLAGS"
+value = "-s -w"
+
+[[io.buildpacks.build.env]]
+name = "BP_GO_BUILD_FLAGS"
+value = "-trimpath"

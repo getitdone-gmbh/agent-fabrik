@@ -1,0 +1,4 @@
+/bin/
+*.test
+/sessions/
+.DS_Store
