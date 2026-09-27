@@ -235,7 +235,7 @@ func (a *userinfoAuth) lookup(ctx context.Context, token string) (*externalUser,
 	return &u, nil
 }
 
-var idUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
+var safeID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,35}$`)
 
 // externalTenant validates a foreign token and ensures the user's tenant.
 func (m *Manager) externalTenant(ctx context.Context, token string) (string, error) {
@@ -244,9 +244,11 @@ func (m *Manager) externalTenant(ctx context.Context, token string) (string, err
 		return "", err
 	}
 	cfg := m.cfg.Tenancy.ExternalAuth
-	id := cfg.PrefixOrDefault() + idUnsafe.ReplaceAllString(strings.ToLower(u.ID), "")
-	if len(id) > 63 {
-		// Long subjects (e.g. OIDC sub URLs) are hashed to a stable id.
+	id := cfg.PrefixOrDefault() + u.ID
+	if !safeID.MatchString(u.ID) {
+		// Anything else (e-mails, mixed case, OIDC sub URLs) is hashed:
+		// stripping characters would map different users to one tenant.
+		// Hashes are 40 chars, safe ids at most 36 (a UUID), so the two never meet.
 		id = cfg.PrefixOrDefault() + hashToken(u.ID)[:40]
 	}
 	plan := m.cfg.Tenancy.DefaultPlan

@@ -88,6 +88,10 @@ func (m *Manager) usedTokens(ctx context.Context, tenant string) (int64, error) 
 }
 
 func (m *Manager) recordUsage(tenant string, u llm.Usage) {
+	// Token counts come from the provider's response, and a tenant may run
+	// its own provider endpoint: a negative count would lower the monthly
+	// total and unlock the shared (operator-paid) provider.
+	u.InputTokens, u.OutputTokens = max(u.InputTokens, 0), max(u.OutputTokens, 0)
 	month := store.Month(time.Now())
 	m.mu.Lock()
 	if c := m.usage[tenant]; c != nil && c.month == month {

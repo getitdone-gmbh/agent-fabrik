@@ -24,6 +24,7 @@
 
 server:
   auth_token: ${AGENT_RUNTIME_TOKEN}
+  cors_origins: ["${CORS_ORIGINS:-}"] # comma-separated, e.g. https://itdone.cloud
 
 providers:
   default:
@@ -52,6 +53,7 @@ tenancy:
     type: postgres
     url: ${DATABASE_URL:-}
   secret_key: ${RUNTIME_SECRET_KEY:-}
+  replicas: ${AGENT_REPLICAS:-1}
   shared_providers: [default]
   external_auth:
     enabled: ${EXTERNAL_AUTH_ENABLED:-false}
@@ -59,7 +61,7 @@ tenancy:
     id_field: ${EXTERNAL_AUTH_ID_FIELD:-sub}
     plan_field: ${EXTERNAL_AUTH_PLAN_FIELD:-}
     tenant_prefix: ${EXTERNAL_AUTH_TENANT_PREFIX:-ext-}
-    plan_map: {free: free, pro: pro}
+    plan_map: {free: free, pro: pro, team: pro, business: pro}
   default_plan: free
   plans:
     free:

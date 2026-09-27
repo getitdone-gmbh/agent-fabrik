@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/getitdone-gmbh/agentd/internal/agent"
 	"github.com/getitdone-gmbh/agentd/internal/testutil"
 	"path/filepath"
 	"sort"
@@ -222,4 +223,63 @@ func TestPostgresLeaderExclusive(t *testing.T) {
 	if !b.Leader(ctx) {
 		t.Fatal("b should take over")
 	}
+}
+
+// Two replicas (two pools on one database) must not run one session at once.
+func TestSessionLockAcrossReplicas(t *testing.T) {
+	url := testutil.PostgresURL(t, "store")
+	if url == "" {
+		t.Skip("AR_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	r1, err := NewPostgres(ctx, url, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1.Close()
+	r2, err := NewPostgres(ctx, url, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	l1 := r1.Sessions().(agent.Locker)
+	l2 := r2.Sessions().(agent.Locker)
+
+	unlock, err := l1.LockSession(ctx, "t/a", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another session is independent.
+	u, err := l2.LockSession(ctx, "t/a", "s2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u()
+	got := make(chan struct{})
+	go func() {
+		u, err := l2.LockSession(ctx, "t/a", "s1")
+		if err == nil {
+			u()
+		}
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("second replica got the lock while the first held it")
+	case <-time.After(300 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lock not released")
+	}
+	// A cancelled wait returns an error instead of hanging.
+	unlock, _ = l1.LockSession(ctx, "t/a", "s1")
+	cctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if _, err := l2.LockSession(cctx, "t/a", "s1"); err == nil {
+		t.Fatal("expected timeout")
+	}
+	unlock()
 }

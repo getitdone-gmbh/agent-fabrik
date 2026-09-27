@@ -25,8 +25,8 @@ type Postgres struct {
 	sessionTTL time.Duration
 	sessions   *pgSessions
 
-	lockMu   sync.Mutex
-	lockConn *sql.Conn
+	lockMu sync.Mutex
+	lockTx *sql.Tx
 }
 
 const leaderLockID = 0x41525254 // "ARRT"
@@ -108,9 +108,9 @@ func NewPostgres(ctx context.Context, url string, sessionTTL time.Duration) (*Po
 
 func (p *Postgres) Close() error {
 	p.lockMu.Lock()
-	if p.lockConn != nil {
-		p.lockConn.Close()
-		p.lockConn = nil
+	if p.lockTx != nil {
+		_ = p.lockTx.Rollback()
+		p.lockTx = nil
 	}
 	p.lockMu.Unlock()
 	return p.db.Close()
@@ -118,27 +118,36 @@ func (p *Postgres) Close() error {
 
 func (p *Postgres) Sessions() agent.Store { return p.sessions }
 
-// Leader holds a session-level advisory lock on a dedicated connection.
+// Leader holds a transaction-level advisory lock inside a transaction that
+// stays open while this replica leads. Transaction-scoped (not session)
+// locks keep working behind PgBouncer in transaction mode, where a session
+// lock would stay on a pooled server connection and leak to other clients.
 func (p *Postgres) Leader(ctx context.Context) bool {
 	p.lockMu.Lock()
 	defer p.lockMu.Unlock()
-	if p.lockConn != nil {
-		if p.lockConn.PingContext(ctx) == nil {
+	// The caller's ctx may be a request context; a cancelled check must not
+	// cost the leadership, so it uses its own deadline.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if p.lockTx != nil {
+		if _, err := p.lockTx.ExecContext(ctx, `SELECT 1`); err == nil {
 			return true
 		}
-		p.lockConn.Close()
-		p.lockConn = nil
+		_ = p.lockTx.Rollback()
+		p.lockTx = nil
 	}
-	conn, err := p.db.Conn(ctx)
+	// BeginTx's ctx would roll the transaction back when cancelled, so the
+	// transaction lives on a background context.
+	tx, err := p.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return false
 	}
 	var ok bool
-	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, leaderLockID).Scan(&ok); err != nil || !ok {
-		conn.Close()
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1)`, leaderLockID).Scan(&ok); err != nil || !ok {
+		_ = tx.Rollback()
 		return false
 	}
-	p.lockConn = conn
+	p.lockTx = tx
 	return true
 }
 
@@ -479,6 +488,24 @@ func (s *pgSessions) Save(ctx context.Context, agentName, session string, msgs [
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM ar_sessions WHERE expires_at < now()`)
 	}
 	return err
+}
+
+// LockSession serializes runs of one session across replicas (otherwise the
+// second run would overwrite the first one's turn). It holds a
+// transaction-level advisory lock in an open transaction for the duration of
+// the run, which also works behind PgBouncer in transaction mode. Ending the
+// transaction releases the lock, even if the connection breaks.
+func (s *pgSessions) LockSession(ctx context.Context, agentName, session string) (func(), error) {
+	tx, err := s.db.BeginTx(context.WithoutCancel(ctx), nil)
+	if err != nil {
+		return nil, err
+	}
+	key := "session:" + sessionKey(agentName, session)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return func() { _ = tx.Rollback() }, nil
 }
 
 func (s *pgSessions) Delete(ctx context.Context, agentName, session string) error {

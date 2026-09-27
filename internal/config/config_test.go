@@ -178,3 +178,28 @@ func TestEmbeddedConfigTenancyFromEnv(t *testing.T) {
 		t.Errorf("single-tenant default must stay valid: %v", err)
 	}
 }
+
+func TestTenantCapsAndSharedModel(t *testing.T) {
+	doc := `
+agents:
+  a:
+    provider: shared
+    model: the-most-expensive-one
+    run_timeout_seconds: 99999
+    parallel_tools: 64
+`
+	lim := DefaultLimits()
+	_, err := ParseWith([]byte(doc), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"shared"}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"model cannot be chosen", "run_timeout_seconds", "parallel_tools"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in: %v", want, err)
+		}
+	}
+	ok := "agents:\n  a: {provider: shared, system: hi}\n"
+	if _, err := ParseWith([]byte(ok), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"shared"}}); err != nil {
+		t.Fatal(err)
+	}
+}

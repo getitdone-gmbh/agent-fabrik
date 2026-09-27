@@ -109,7 +109,11 @@ or set `TENANCY_ENABLED=true` with the embedded config. Then:
 - **Scale-out:** with the Postgres store, run several replicas behind the
   service. Runs are served by any replica. Exactly one replica (a Postgres
   advisory lock) runs the scheduler, picks up changes from all replicas, and
-  fails over automatically.
+  fails over automatically. Runs of one session are serialized across
+  replicas with a Postgres lock, and per-process limits (runs per minute,
+  concurrent runs) are split by `tenancy.replicas` (`AGENT_REPLICAS`). All
+  locks are transaction-scoped, so the store also works behind PgBouncer in
+  transaction mode.
 - The agents in the config file keep working as the read-only **system**
   tenant, reached with the admin token.
 
@@ -229,7 +233,7 @@ to tenants. Scale replicas for throughput, not per agent.
 | Docker Compose (runtime + Postgres) | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml) |
 | Kubernetes (2 replicas, hardened pod) | [`deploy/kubernetes/agentd.yaml`](deploy/kubernetes/agentd.yaml) |
 | Cloud Native Buildpacks (`pack`, kpack, Heroku-style PaaS) | `go.mod` at the root + [`project.toml`](project.toml); listens on `$PORT` |
-| ITDone Cloud | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
+| ITDone Cloud | [`itdone.yaml`](itdone.yaml) (this repo's own deployment) |
 
 For a single-tenant setup, leave `TENANCY_ENABLED` unset; no database is
 needed. For custom configs, mount a file (`-config`, `AGENT_CONFIG`) or pass

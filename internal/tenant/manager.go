@@ -32,8 +32,8 @@ const System = "system"
 
 var (
 	ErrDisabled      = errors.New("tenant is disabled")
-	ErrRateLimited   = errors.New("rate limit exceeded, retry later")
-	ErrQuotaExceeded = errors.New("monthly token quota exceeded")
+	ErrRateLimited   = fmt.Errorf("rate limit exceeded, retry later: %w", agent.ErrThrottled)
+	ErrQuotaExceeded = fmt.Errorf("monthly token quota exceeded: %w", agent.ErrThrottled)
 	ErrReadOnly      = errors.New("the system tenant is configured by file and read-only")
 )
 
@@ -127,6 +127,9 @@ func (m *Manager) Scheduler() *triggers.Scheduler { return m.sched }
 
 // Store returns the backing store.
 func (m *Manager) Store() store.Store { return m.st }
+
+// IsLeader reports whether this replica currently runs the scheduler.
+func (m *Manager) IsLeader() bool { return m.leader.Load() }
 
 // Enabled reports whether multi-tenancy is on.
 func (m *Manager) Enabled() bool { return m.cfg.Tenancy.Enabled && m.st != nil }
@@ -494,7 +497,7 @@ func (m *Manager) Acquire(ctx context.Context, id string) (*app.App, func(), err
 		Guarded:            true,
 		Shared:             shared,
 		Store:              agent.Prefixed(m.st.Sessions(), id+"/"),
-		MaxConcurrentRuns:  max(lim.MaxConcurrentRuns, 1),
+		MaxConcurrentRuns:  max(config.PerReplica(lim.MaxConcurrentRuns, m.cfg.Tenancy.Replicas), 1),
 		ConnectorsOptional: true,
 		MaxSteps:           lim.MaxSteps,
 	})
@@ -692,7 +695,7 @@ func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.
 	}
 	lim := m.Limits(t)
 	if tenantID != System {
-		if !m.allow(tenantID, lim.RunsPerMinute) {
+		if !m.allow(tenantID, config.PerReplica(lim.RunsPerMinute, m.cfg.Tenancy.Replicas)) {
 			return nil, ErrRateLimited
 		}
 		if lim.MonthlyTokens > 0 {

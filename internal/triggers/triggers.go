@@ -4,6 +4,7 @@ package triggers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -122,6 +123,12 @@ func (p *poller) poll(ctx context.Context, env Env) error {
 			break
 		}
 		if err := p.handle(ctx, env, conn, in.email, reply); err != nil {
+			if errors.Is(err, agent.ErrThrottled) {
+				// Throttling is not the message's fault: leave it (and the
+				// rest of the batch) unread for a later poll.
+				p.log.Warn("tenant throttled, leaving emails unread", "err", err)
+				break
+			}
 			p.attempts[in.uid]++
 			p.log.Error("handling email failed", "uid", in.uid, "attempt", p.attempts[in.uid], "err", err)
 			if p.attempts[in.uid] < maxAttempts {

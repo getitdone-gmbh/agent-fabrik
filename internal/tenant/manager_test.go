@@ -16,6 +16,7 @@ import (
 
 	"github.com/getitdone-gmbh/agentd/internal/agent"
 	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
 	"github.com/getitdone-gmbh/agentd/internal/store"
 )
 
@@ -244,7 +245,7 @@ func TestExternalAuthOIDC(t *testing.T) {
 	m, st := newManager(t, "  external_auth:\n    enabled: true\n    userinfo_url: "+idp.URL+"\n    plan_field: org.plan\n    plan_map: {pro: default}\n")
 	ctx := context.Background()
 	id, err := m.Authenticate(ctx, "good")
-	if err != nil || id != "ext-8f14e45fceea467a9575" {
+	if err != nil || id != "ext-8f14e45f-ceea-467a-9575" {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
 	tn, _ := st.GetTenant(ctx, id)
@@ -260,5 +261,31 @@ func TestExternalAuthOIDC(t *testing.T) {
 	}
 	if _, err := m.Authenticate(ctx, "bad"); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("bad token: %v", err)
+	}
+}
+
+func TestExternalIDsNeverCollide(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sub := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		io.WriteString(w, `{"email":"`+sub+`"}`)
+	}))
+	defer idp.Close()
+	m, _ := newManager(t, "  external_auth:\n    enabled: true\n    userinfo_url: "+idp.URL+"\n    id_field: email\n")
+	ctx := context.Background()
+	a, err1 := m.Authenticate(ctx, "John.Doe@x.com")
+	b, err2 := m.Authenticate(ctx, "johndoe@x.com")
+	if err1 != nil || err2 != nil || a == b {
+		t.Fatalf("a=%q b=%q err=%v %v", a, b, err1, err2)
+	}
+}
+
+func TestNegativeUsageIgnored(t *testing.T) {
+	m, _ := newManager(t, "")
+	ctx := context.Background()
+	m.recordUsage("t1", llm.Usage{InputTokens: 100, OutputTokens: 10})
+	m.recordUsage("t1", llm.Usage{InputTokens: -1_000_000, OutputTokens: -5})
+	u, err := m.Usage(ctx, "t1")
+	if err != nil || u.InputTokens != 100 || u.OutputTokens != 10 {
+		t.Fatalf("usage %+v err=%v", u, err)
 	}
 }

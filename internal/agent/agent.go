@@ -40,6 +40,10 @@ type Config struct {
 // Exposed reports whether the agent is reachable through the public APIs.
 func (c Config) Exposed() bool { return c.Expose == nil || *c.Expose }
 
+// ErrThrottled marks errors that mean "not now" (rate limit, quota): the
+// input was not processed and should be retried later, not given up on.
+var ErrThrottled = errors.New("throttled")
+
 // Event is a progress notification emitted while an agent runs.
 type Event struct {
 	Type    string          `json:"type"` // step, tool_call, tool_result, message, done, error
@@ -175,6 +179,13 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 	var history []llm.Message
 	if persist {
 		defer a.lock(sid)()
+		if l, ok := a.store.(Locker); ok {
+			unlock, err := l.LockSession(ctx, a.cfg.Name, sid)
+			if err != nil {
+				return nil, fmt.Errorf("lock session: %w", err)
+			}
+			defer unlock()
+		}
 		h, err := a.store.Load(ctx, a.cfg.Name, sid)
 		if err != nil {
 			return nil, fmt.Errorf("load session: %w", err)

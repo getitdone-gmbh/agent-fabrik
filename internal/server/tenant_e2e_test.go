@@ -326,7 +326,7 @@ secrets:
 
 	// External users are tenants automatically, plan follows their tier.
 	code, out = e.call(t, "itd-token-alice", "GET", "/v1/me", "")
-	if code != 200 || out["tenant"].(map[string]any)["id"] != "itd-ualice" || out["tenant"].(map[string]any)["plan"] != "pro" {
+	if code != 200 || out["tenant"].(map[string]any)["id"] != "itd-u-alice" || out["tenant"].(map[string]any)["plan"] != "pro" {
 		t.Fatalf("external auth: %d %v", code, out)
 	}
 	if code, _ := e.call(t, "itd-token-bob", "GET", "/v1/me", ""); code != 401 {
@@ -373,7 +373,7 @@ secrets:
 	if code, _ := e.call(t, betaKey, "GET", "/v1/me", ""); code != 401 {
 		t.Errorf("deleted tenant key still valid: %d", code)
 	}
-	for _, id := range []string{acme, tiny, "itd-ualice"} {
+	for _, id := range []string{acme, tiny, "itd-u-alice"} {
 		e.call(t, "admin-token", "DELETE", "/v1/admin/tenants/"+id, "")
 	}
 }

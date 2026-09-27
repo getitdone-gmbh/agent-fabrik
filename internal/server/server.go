@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -105,7 +106,15 @@ func (s *Server) limitBody(next http.Handler) http.Handler {
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
-	origins := s.cfg.Server.CORSOrigins
+	// Entries may hold comma-separated lists (one env var for all origins).
+	var origins []string
+	for _, o := range s.cfg.Server.CORSOrigins {
+		for _, part := range strings.Split(o, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				origins = append(origins, part)
+			}
+		}
+	}
 	if len(origins) == 0 {
 		return next
 	}
@@ -478,6 +487,11 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	metrics.TriggerRuns.Add(1)
 	if t.Async {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("async webhook run panicked", "tenant", tenantID, "agent", name, "panic", r)
+				}
+			}()
 			if _, err := s.m.Run(s.bg, tenantID, name, in); err != nil {
 				_ = err // logged by the agent / manager
 			}

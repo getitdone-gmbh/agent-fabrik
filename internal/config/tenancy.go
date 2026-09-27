@@ -29,6 +29,10 @@ type TenancyConfig struct {
 	MaxCachedRuntimes int    `yaml:"max_cached_runtimes"`
 	SchedulerWorkers  int    `yaml:"scheduler_workers"`
 	SessionTTL        string `yaml:"session_ttl"`
+	// Replicas is the number of runtime replicas. Rate and concurrency
+	// limits are counted per process, so each replica enforces its share
+	// (limit / replicas, rounded up) and the tenant gets the plan's total.
+	Replicas int `yaml:"replicas"`
 	// AllowNetworks lets tenant connections reach these internal CIDRs.
 	AllowNetworks []string `yaml:"allow_networks"`
 }
@@ -93,6 +97,16 @@ type Limits struct {
 	ConnectorTypes      []string `yaml:"connector_types" json:"connector_types,omitempty"`
 }
 
+// Hard caps for per-agent settings in tenant documents.
+const (
+	TenantMaxRunSeconds    = 300
+	TenantMaxToolSeconds   = 60
+	TenantMaxToolOutput    = 50_000
+	TenantMaxParallelTools = 4
+	TenantMaxHistory       = 100
+	TenantMaxTokens        = 8192
+)
+
 // DefaultLimits are conservative limits used when no plan matches.
 func DefaultLimits() Limits {
 	return Limits{
@@ -100,6 +114,15 @@ func DefaultLimits() Limits {
 		MaxConcurrentRuns: 2, RunsPerMinute: 30, MonthlyTokens: 1_000_000, MaxSteps: 12,
 		MinScheduleInterval: "5m", MinPollInterval: "2m",
 	}
+}
+
+// PerReplica splits a per-process limit across n replicas (0 stays
+// unlimited, and every replica keeps at least 1).
+func PerReplica(limit, replicas int) int {
+	if limit <= 0 || replicas <= 1 {
+		return limit
+	}
+	return (limit + replicas - 1) / replicas
 }
 
 // AllowsShared reports whether shared providers may be used.
@@ -155,6 +178,23 @@ func (l Limits) check(c *Config) []string {
 	for name, a := range c.Agents {
 		if l.MaxSteps > 0 && a.MaxSteps > l.MaxSteps {
 			errs = append(errs, fmt.Sprintf("agent %q: max_steps %d exceeds limit %d", name, a.MaxSteps, l.MaxSteps))
+		}
+		// Tenants share one process: settings that hold a run slot or
+		// memory for longer are capped so one tenant cannot starve the rest.
+		for _, c := range []struct {
+			field  string
+			n, max int
+		}{
+			{"run_timeout_seconds", a.RunTimeoutSec, TenantMaxRunSeconds},
+			{"tool_timeout_seconds", a.ToolTimeoutSec, TenantMaxToolSeconds},
+			{"max_tool_output", a.MaxToolOutput, TenantMaxToolOutput},
+			{"parallel_tools", a.ParallelTools, TenantMaxParallelTools},
+			{"history_limit", a.HistoryLimit, TenantMaxHistory},
+			{"max_tokens", a.MaxTokens, TenantMaxTokens},
+		} {
+			if c.n > c.max {
+				errs = append(errs, fmt.Sprintf("agent %q: %s %d exceeds limit %d", name, c.field, c.n, c.max))
+			}
 		}
 		for i, t := range a.Triggers {
 			triggers++

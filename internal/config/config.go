@@ -268,6 +268,11 @@ func (c *Config) validate(opts ParseOptions) error {
 		} else if _, ok := c.Providers[a.Provider]; !ok && !extra[a.Provider] {
 			errs = append(errs, fmt.Sprintf("agent %q: unknown provider %q", name, a.Provider))
 		}
+		if _, own := c.Providers[a.Provider]; opts.Tenant && !own && extra[a.Provider] && a.Model != "" {
+			// Shared providers are paid by the operator: the tenant gets the
+			// operator's model, never a pricier one of its own choosing.
+			errs = append(errs, fmt.Sprintf("agent %q: model cannot be chosen on the shared provider %q", name, a.Provider))
+		}
 		for i, t := range a.Triggers {
 			where := fmt.Sprintf("agent %q trigger %d (%s)", name, i, t.Type)
 			switch t.Type {

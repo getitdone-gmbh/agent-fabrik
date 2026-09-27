@@ -21,6 +21,13 @@ type Store interface {
 	Delete(ctx context.Context, agent, session string) error
 }
 
+// Locker is implemented by stores shared between replicas. LockSession
+// serializes runs of one session across processes; the returned func
+// releases the lock.
+type Locker interface {
+	LockSession(ctx context.Context, agent, session string) (func(), error)
+}
+
 // MemoryStore keeps sessions in RAM with a TTL and a size cap.
 type MemoryStore struct {
 	mu          sync.Mutex
@@ -181,4 +188,10 @@ func (p prefixed) Save(ctx context.Context, agent, session string, msgs []llm.Me
 }
 func (p prefixed) Delete(ctx context.Context, agent, session string) error {
 	return p.inner.Delete(ctx, p.prefix+agent, session)
+}
+func (p prefixed) LockSession(ctx context.Context, agent, session string) (func(), error) {
+	if l, ok := p.inner.(Locker); ok {
+		return l.LockSession(ctx, p.prefix+agent, session)
+	}
+	return func() {}, nil
 }

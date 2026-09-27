@@ -437,6 +437,6 @@ func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
 		st["tenants"] = len(ts)
 	}
 	st["version"] = Version
-	st["leader"] = s.m.Store().Leader(r.Context())
+	st["leader"] = s.m.IsLeader()
 	writeJSON(w, http.StatusOK, st)
 }
