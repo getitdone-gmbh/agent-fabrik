@@ -233,7 +233,8 @@ to tenants. Scale replicas for throughput, not per agent.
 | Docker Compose (runtime + Postgres) | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml) |
 | Kubernetes (2 replicas, hardened pod) | [`deploy/kubernetes/agentd.yaml`](deploy/kubernetes/agentd.yaml) |
 | Cloud Native Buildpacks (`pack`, kpack, Heroku-style PaaS) | `go.mod` at the root + [`project.toml`](project.toml); listens on `$PORT` |
-| ITDone Cloud | [`itdone.yaml`](itdone.yaml) (this repo's own deployment) |
+| ITDone Cloud (as a customer app) | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
+| ITDone's own agent runtime | ArgoCD, `infra/k8s/envs/itdone-cloud/itdone-agentd/` in itdone-cloud; image built by [`.github/workflows/image.yml`](.github/workflows/image.yml) |
 
 For a single-tenant setup, leave `TENANCY_ENABLED` unset; no database is
 needed. For custom configs, mount a file (`-config`, `AGENT_CONFIG`) or pass

@@ -1,4 +1,6 @@
-# Deploy manifest for ITDone Cloud (https://itdone.cloud): the platform
+# Example: agentd as a customer app on ITDone Cloud (copy to your repo root).
+# ITDone itself runs agentd via ArgoCD instead (itdone-cloud: infra/k8s/envs/
+# itdone-cloud/itdone-agentd). The platform
 # builds this repo with Cloud Native Buildpacks and runs two replicas behind
 # one URL. Tenants are ITDone users (their dashboard token is checked against
 # api.itdone.cloud/me); agents are rows in the attached Postgres, not pods.
