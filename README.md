@@ -203,6 +203,35 @@ claude mcp add --transport http agents https://agents.example.com/mcp \
 Flags: `-config`, `-check`, `-chat <agent>`, `-run <agent> -input "..."`
 (or stdin), `-version`.
 
+## Files
+
+Every tenant has its own file storage (in the store, so Postgres with the
+postgres backend: shared by all replicas and covered by its backups).
+
+- Agents use it with `tools: ["files.*"]`: `files__list`, `files__read`
+  (text, in pieces for long files), `files__write` (create, overwrite or
+  append), `files__delete`. Grant only reading with
+  `tools: ["files.list", "files.read"]`.
+- The API uploads and downloads raw bytes, so users can hand agents
+  documents and fetch their results:
+
+  ```bash
+  curl -X PUT $RT/v1/files/kunden/liste.csv -H "Authorization: Bearer $KEY" --data-binary @liste.csv
+  curl $RT/v1/files?prefix=reports/ -H "Authorization: Bearer $KEY"
+  curl $RT/v1/files/reports/2026-09.md -H "Authorization: Bearer $KEY"
+  ```
+
+- Plans cap it: `max_files`, `max_file_mb`, `max_storage_mb` (defaults 500,
+  5 and 50; `-1` = unlimited). The quota is checked in the same transaction
+  as the write, so parallel uploads cannot overshoot it. `GET /v1/me` reports
+  usage.
+- Paths are relative (`reports/2026-09.md`); `..`, absolute paths and
+  control characters are refused. Downloads are always sent as attachments
+  with `nosniff`, never rendered on the API origin.
+
+There is deliberately no shell and no host file system: agents of many
+tenants share one process.
+
 ## Email agents
 
 An `imap` trigger polls the mailbox (default every minute). For each unread

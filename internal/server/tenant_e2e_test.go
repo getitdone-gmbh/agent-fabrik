@@ -117,6 +117,9 @@ tenancy:
       max_agents: 2
       runs_per_minute: 1000
       monthly_tokens: 20
+      max_files: 2
+      max_file_mb: 1
+      max_storage_mb: 1
 `, llmSrv.URL, base64.StdEncoding.EncodeToString(key), itd.URL)
 	cfg, err := config.Parse([]byte(doc))
 	if err != nil {
@@ -375,5 +378,101 @@ secrets:
 	}
 	for _, id := range []string{acme, tiny, "itd-u-alice"} {
 		e.call(t, "admin-token", "DELETE", "/v1/admin/tenants/"+id, "")
+	}
+}
+
+func TestFiles(t *testing.T) {
+	stores := map[string]func() store.Store{"mem": func() store.Store { return nil }}
+	if url := testutil.PostgresURL(t, "server"); url != "" {
+		stores["postgres"] = func() store.Store {
+			p, err := store.NewPostgres(context.Background(), url, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+	}
+	for name, mk := range stores {
+		t.Run(name, func(t *testing.T) { filesE2E(t, mk()) })
+	}
+}
+
+func (e *mtEnv) raw(t *testing.T, token, method, path, body string) (int, string, http.Header) {
+	t.Helper()
+	req, _ := http.NewRequest(method, e.url+path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), resp.Header
+}
+
+func filesE2E(t *testing.T, st store.Store) {
+	e := mtSetup(t, st)
+	suffix := fmt.Sprint(time.Now().UnixNano() % 1e9)
+	_, out := e.call(t, "admin-token", "POST", "/v1/admin/tenants", `{"id":"fa`+suffix+`"}`)
+	a := out["key"].(string)
+	_, out = e.call(t, "admin-token", "POST", "/v1/admin/tenants", `{"id":"fb`+suffix+`","plan":"tiny"}`)
+	b := out["key"].(string)
+
+	// Upload, download, list.
+	if code, body, _ := e.raw(t, a, "PUT", "/v1/files/kunden/liste.csv", "name,ort\nHuber,Fürth\n"); code != 200 {
+		t.Fatalf("put: %d %s", code, body)
+	}
+	code, body, hdr := e.raw(t, a, "GET", "/v1/files/kunden/liste.csv", "")
+	if code != 200 || body != "name,ort\nHuber,Fürth\n" || !strings.HasPrefix(hdr.Get("Content-Type"), "text/csv") ||
+		!strings.HasPrefix(hdr.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("get: %d %q %v", code, body, hdr)
+	}
+	code, out = e.call(t, a, "GET", "/v1/files?prefix=kunden/", "")
+	if code != 200 || len(out["files"].([]any)) != 1 || out["usage"].(map[string]any)["files"].(float64) != 1 {
+		t.Fatalf("list: %d %v", code, out)
+	}
+
+	// Another tenant sees nothing of it.
+	if code, _, _ := e.raw(t, b, "GET", "/v1/files/kunden/liste.csv", ""); code != 404 {
+		t.Errorf("tenant b read a's file: %d", code)
+	}
+	if _, out := e.call(t, b, "GET", "/v1/files", ""); len(out["files"].([]any)) != 0 {
+		t.Errorf("tenant b lists: %v", out)
+	}
+
+	// Bad paths are refused before touching storage.
+	for _, p := range []string{"../x", "a/../../x", "%2e%2e/x"} {
+		if code, body, _ := e.raw(t, a, "PUT", "/v1/files/"+p, "x"); code == 200 {
+			t.Errorf("path %q accepted: %s", p, body)
+		}
+	}
+
+	// Quota of the tiny plan: 2 files, 1 MB each and in total.
+	big := strings.Repeat("x", 1<<20+1)
+	if code, _, _ := e.raw(t, b, "PUT", "/v1/files/big.bin", big); code != 413 {
+		t.Errorf("oversized file: %d", code)
+	}
+	e.raw(t, b, "PUT", "/v1/files/1.txt", "a")
+	e.raw(t, b, "PUT", "/v1/files/2.txt", "b")
+	if code, body, _ := e.raw(t, b, "PUT", "/v1/files/3.txt", "c"); code != 413 {
+		t.Errorf("third file on a 2-file plan: %d %s", code, body)
+	}
+	if code, _, _ := e.raw(t, b, "PUT", "/v1/files/2.txt", "replaced"); code != 200 {
+		t.Errorf("replacing within quota: %d", code)
+	}
+
+	// An agent reads its tenant's file through the files tool.
+	e.call(t, a, "PUT", "/v1/config/agents/reader", `{"provider":"shared","tools":["files.*"]}`)
+	code, out = e.call(t, a, "POST", "/v1/agents/reader/run", `{"input":"READ kunden/liste.csv"}`)
+	if code != 200 || !strings.Contains(out["output"].(string), "Huber") {
+		t.Fatalf("agent read: %d %v", code, out)
+	}
+
+	// Delete.
+	if code, _, _ := e.raw(t, a, "DELETE", "/v1/files/kunden/liste.csv", ""); code != 204 {
+		t.Errorf("delete: %d", code)
+	}
+	if code, _, _ := e.raw(t, a, "GET", "/v1/files/kunden/liste.csv", ""); code != 404 {
+		t.Errorf("after delete: %d", code)
 	}
 }

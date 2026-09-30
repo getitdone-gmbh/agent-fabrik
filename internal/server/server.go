@@ -100,7 +100,11 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 func (s *Server) limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		metrics.HTTPRequests.Add(1)
-		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes)
+		// File uploads are capped by the tenant's per-file quota instead
+		// (putFile), which may be larger than the API body limit.
+		if !(r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/files/")) {
+			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -207,6 +211,8 @@ func fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &ve):
 		writeError(w, http.StatusUnprocessableEntity, ve.Msg)
+	case errors.Is(err, store.ErrFileQuota):
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, store.ErrExists):

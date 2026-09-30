@@ -74,6 +74,9 @@ tenancy:
       max_steps: 8
       min_schedule_interval: 15m
       min_poll_interval: 5m
+      max_files: 500
+      max_file_mb: 5
+      max_storage_mb: 50
       shared_providers: ${TENANT_SHARED_LLM:-false}
     pro:
       max_agents: 100
@@ -85,4 +88,7 @@ tenancy:
       max_steps: 20
       min_schedule_interval: 1m
       min_poll_interval: 1m
+      max_files: 5000
+      max_file_mb: 25
+      max_storage_mb: 1024
       shared_providers: ${TENANT_SHARED_LLM:-false}

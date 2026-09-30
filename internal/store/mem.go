@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,12 @@ type memData struct {
 	Resources map[string]map[string]Resource `json:"resources"`
 	Secrets   map[string]map[string][]byte   `json:"secrets"`
 	Usage     map[string]map[string]*Usage   `json:"usage"`
+	Files     map[string]map[string]*memFile `json:"files,omitempty"`
+}
+
+type memFile struct {
+	File
+	Data []byte `json:"data"`
 }
 
 // NewMem creates an in-memory store; path may be empty.
@@ -43,7 +50,7 @@ func NewMem(path string, sessionTTL time.Duration, maxSessions int) (*Mem, error
 		data: memData{
 			Tenants: map[string]*Tenant{}, Keys: map[string]*APIKey{},
 			Resources: map[string]map[string]Resource{}, Secrets: map[string]map[string][]byte{},
-			Usage: map[string]map[string]*Usage{},
+			Usage: map[string]map[string]*Usage{}, Files: map[string]map[string]*memFile{},
 		},
 	}
 	if path != "" {
@@ -160,6 +167,7 @@ func (m *Mem) DeleteTenant(_ context.Context, id string) error {
 	delete(m.data.Resources, id)
 	delete(m.data.Secrets, id)
 	delete(m.data.Usage, id)
+	delete(m.data.Files, id)
 	for h, k := range m.data.Keys {
 		if k.TenantID == id {
 			delete(m.data.Keys, h)
@@ -336,4 +344,81 @@ func (m *Mem) GetUsage(_ context.Context, tenant, month string) (Usage, error) {
 		return *u, nil
 	}
 	return Usage{Month: month}, nil
+}
+
+// ---------- files ----------
+
+func (m *Mem) fileUsageLocked(tenant, except string) FileUsage {
+	var u FileUsage
+	for p, f := range m.data.Files[tenant] {
+		if p != except {
+			u.Files++
+			u.Bytes += f.Size
+		}
+	}
+	return u
+}
+
+func (m *Mem) PutFile(_ context.Context, tenant, path string, data []byte, contentType string, q FileQuota) (File, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data.Tenants[tenant]; !ok {
+		return File{}, ErrNotFound
+	}
+	if err := checkQuota(q, m.fileUsageLocked(tenant, path), int64(len(data))); err != nil {
+		return File{}, err
+	}
+	if m.data.Files == nil {
+		m.data.Files = map[string]map[string]*memFile{}
+	}
+	if m.data.Files[tenant] == nil {
+		m.data.Files[tenant] = map[string]*memFile{}
+	}
+	f := File{Path: path, Size: int64(len(data)), ContentType: contentType, UpdatedAt: time.Now().UTC()}
+	m.data.Files[tenant][path] = &memFile{File: f, Data: append([]byte(nil), data...)}
+	m.markDirty()
+	return f, nil
+}
+
+func (m *Mem) GetFile(_ context.Context, tenant, path string) (File, []byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	f, ok := m.data.Files[tenant][path]
+	if !ok {
+		return File{}, nil, ErrNotFound
+	}
+	return f.File, append([]byte(nil), f.Data...), nil
+}
+
+func (m *Mem) ListFiles(_ context.Context, tenant, prefix string, limit int) ([]File, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []File{}
+	for p, f := range m.data.Files[tenant] {
+		if strings.HasPrefix(p, prefix) {
+			out = append(out, f.File)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *Mem) DeleteFile(_ context.Context, tenant, path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data.Files[tenant][path]; !ok {
+		return ErrNotFound
+	}
+	delete(m.data.Files[tenant], path)
+	m.markDirty()
+	return nil
+}
+
+func (m *Mem) FileUsage(_ context.Context, tenant string) (FileUsage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.fileUsageLocked(tenant, "\x00"), nil
 }

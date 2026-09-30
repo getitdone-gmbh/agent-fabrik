@@ -48,6 +48,8 @@ type Options struct {
 	ConnectorsOptional bool
 	// MaxSteps caps every agent's max_steps (0 = no cap).
 	MaxSteps int
+	// Files, when set, adds the built-in "files" connector (tenant storage).
+	Files tools.FilesBackend
 }
 
 // Build constructs the app from config.
@@ -90,6 +92,11 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 
 	if err := a.Registry.Add(ctx, tools.NewBuiltin("system")); err != nil {
 		return nil, err
+	}
+	if opts.Files != nil {
+		if err := a.Registry.Add(ctx, tools.NewFiles("files", opts.Files)); err != nil {
+			return nil, err
+		}
 	}
 	names := make([]string, 0, len(cfg.Connectors))
 	for n := range cfg.Connectors {

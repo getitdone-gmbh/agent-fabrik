@@ -95,6 +95,31 @@ type Limits struct {
 	MinPollInterval     string   `yaml:"min_poll_interval" json:"min_poll_interval"`
 	SharedProviders     *bool    `yaml:"shared_providers" json:"shared_providers,omitempty"`
 	ConnectorTypes      []string `yaml:"connector_types" json:"connector_types,omitempty"`
+	// File storage (files.* tools, /v1/files). 0 = default, -1 = unlimited.
+	MaxFiles     int `yaml:"max_files" json:"max_files"`
+	MaxFileMB    int `yaml:"max_file_mb" json:"max_file_mb"`
+	MaxStorageMB int `yaml:"max_storage_mb" json:"max_storage_mb"`
+}
+
+// Defaults for file storage when a plan does not set them.
+const (
+	DefaultMaxFiles     = 500
+	DefaultMaxFileMB    = 5
+	DefaultMaxStorageMB = 50
+)
+
+// FileLimits returns the file quota in files and bytes (0 = unlimited).
+func (l Limits) FileLimits() (files, fileBytes, totalBytes int64) {
+	pick := func(v, def int) int64 {
+		switch {
+		case v < 0:
+			return 0
+		case v == 0:
+			return int64(def)
+		}
+		return int64(v)
+	}
+	return pick(l.MaxFiles, DefaultMaxFiles), pick(l.MaxFileMB, DefaultMaxFileMB) << 20, pick(l.MaxStorageMB, DefaultMaxStorageMB) << 20
 }
 
 // Hard caps for per-agent settings in tenant documents.

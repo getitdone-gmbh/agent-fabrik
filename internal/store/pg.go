@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS ar_sessions (
   expires_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ar_sessions_expires ON ar_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS ar_files (
+  tenant_id text NOT NULL REFERENCES ar_tenants(id) ON DELETE CASCADE,
+  path text NOT NULL,
+  content_type text NOT NULL DEFAULT '',
+  size bigint NOT NULL,
+  data bytea NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, path)
+);
 `
 
 // NewPostgres connects and migrates the schema.
@@ -511,4 +520,88 @@ func (s *pgSessions) LockSession(ctx context.Context, agentName, session string)
 func (s *pgSessions) Delete(ctx context.Context, agentName, session string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM ar_sessions WHERE key=$1`, sessionKey(agentName, session))
 	return err
+}
+
+// ---------- files ----------
+
+// PutFile writes a file in one transaction that locks the tenant row, so
+// concurrent writes of one tenant (from any replica) cannot both pass the
+// quota check.
+func (p *Postgres) PutFile(ctx context.Context, tenant, path string, data []byte, contentType string, q FileQuota) (File, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return File{}, err
+	}
+	defer tx.Rollback()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM ar_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return File{}, ErrNotFound
+		}
+		return File{}, err
+	}
+	var others FileUsage
+	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(size),0) FROM ar_files WHERE tenant_id=$1 AND path<>$2`,
+		tenant, path).Scan(&others.Files, &others.Bytes); err != nil {
+		return File{}, err
+	}
+	if err := checkQuota(q, others, int64(len(data))); err != nil {
+		return File{}, err
+	}
+	f := File{Path: path, Size: int64(len(data)), ContentType: contentType}
+	if err := tx.QueryRowContext(ctx, `INSERT INTO ar_files (tenant_id, path, content_type, size, data) VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (tenant_id, path) DO UPDATE SET content_type=EXCLUDED.content_type, size=EXCLUDED.size, data=EXCLUDED.data, updated_at=now()
+		RETURNING updated_at`, tenant, path, contentType, f.Size, data).Scan(&f.UpdatedAt); err != nil {
+		return File{}, err
+	}
+	return f, tx.Commit()
+}
+
+func (p *Postgres) GetFile(ctx context.Context, tenant, path string) (File, []byte, error) {
+	f := File{Path: path}
+	var data []byte
+	err := p.db.QueryRowContext(ctx, `SELECT content_type, size, updated_at, data FROM ar_files WHERE tenant_id=$1 AND path=$2`, tenant, path).
+		Scan(&f.ContentType, &f.Size, &f.UpdatedAt, &data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return File{}, nil, ErrNotFound
+	}
+	return f, data, err
+}
+
+func (p *Postgres) ListFiles(ctx context.Context, tenant, prefix string, limit int) ([]File, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := p.db.QueryContext(ctx, `SELECT path, content_type, size, updated_at FROM ar_files
+		WHERE tenant_id=$1 AND path LIKE $2 ORDER BY path LIMIT $3`, tenant, escapeLike(prefix)+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []File{}
+	for rows.Next() {
+		var f File
+		if err := rows.Scan(&f.Path, &f.ContentType, &f.Size, &f.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteFile(ctx context.Context, tenant, path string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM ar_files WHERE tenant_id=$1 AND path=$2`, tenant, path)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) FileUsage(ctx context.Context, tenant string) (FileUsage, error) {
+	var u FileUsage
+	err := p.db.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(size),0) FROM ar_files WHERE tenant_id=$1`, tenant).Scan(&u.Files, &u.Bytes)
+	return u, err
 }

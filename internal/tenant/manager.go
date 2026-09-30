@@ -518,6 +518,7 @@ func (m *Manager) Acquire(ctx context.Context, id string) (*app.App, func(), err
 		Shared:             shared,
 		Store:              agent.Prefixed(m.st.Sessions(), id+"/"),
 		MaxConcurrentRuns:  max(config.PerReplica(lim.MaxConcurrentRuns, m.cfg.Tenancy.Replicas), 1),
+		Files:              m.filesFor(t),
 		ConnectorsOptional: true,
 		MaxSteps:           lim.MaxSteps,
 	})
