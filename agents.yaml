@@ -25,6 +25,7 @@
 server:
   auth_token: ${AGENT_RUNTIME_TOKEN:-}
   cors_origins: ["${CORS_ORIGINS:-}"] # comma-separated, e.g. https://itdone.cloud
+  ui: ${AGENT_UI:-true} # web UI at /ui/
 
 providers:
   default:

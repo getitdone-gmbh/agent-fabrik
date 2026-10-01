@@ -169,6 +169,30 @@ Without `-config`, the runtime uses `$AGENT_CONFIG`, then inline YAML in
 may contain any character without breaking the document. `$${` gives a
 literal `${`.
 
+## Web UI
+
+The binary ships a small web UI at `/ui/` (`/` redirects there). Sign in
+with a tenant key (`ark_...`), your platform token (with `external_auth`) or
+the admin token. Then you can:
+
+- see all agents with their provider, tools and triggers, and chat with
+  them (streamed, with tool calls shown);
+- create, edit and delete agents in a form (system prompt, provider, tools,
+  cron/interval/webhook/email triggers, limits) or as JSON;
+- add providers (the API key is stored as an encrypted secret), connectors
+  (from YAML templates), secrets and API keys;
+- as admin, switch between the system agents and any tenant.
+
+Without tenancy, the agents come from the config file: the UI lists them
+and chats with them, but cannot change them.
+
+The page is static (plain HTML, CSS and JS embedded in the binary, no build
+step, no third-party code) and calls the same `/v1` API with the token you
+enter. It is served with a strict Content-Security-Policy (only its own
+scripts, styles and API, no framing). The token stays in the tab
+(`sessionStorage`), or in `localStorage` if you tick "Remember". Turn the UI
+off with `server.ui: false` (`AGENT_UI=false`).
+
 ## API
 
 All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>`
@@ -307,7 +331,7 @@ Layout: `internal/llm` (providers), `internal/mcp` (client + server),
 cron, IMAP), `internal/tenant` (runtime cache, quotas, secrets, auth),
 `internal/store` (memory/file and Postgres), `internal/netguard` (SSRF
 guard), `internal/server` (HTTP, SSE, OpenAI, MCP, webhooks, tenant and
-admin API), `internal/config`.
+admin API; the web UI in `internal/server/ui`), `internal/config`.
 
 Postgres tests run when `AR_TEST_DATABASE_URL` is set:
 
