@@ -1,0 +1,31 @@
+name: release
+
+# Push a tag v* -> tests, static Linux binaries (amd64, arm64) and a GitHub
+# release with SHA256SUMS. Tags with a "-" (v0.2.0-rc.1) become pre-releases.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Lint + test
+        run: make lint test
+      - name: Build
+        run: make release VERSION=${{ github.ref_name }}
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          pre=""; case "$TAG" in *-*) pre="--prerelease";; esac
+          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS $pre --verify-tag --generate-notes --title "agentd $TAG"
