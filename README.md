@@ -41,6 +41,9 @@ dependencies (`gopkg.in/yaml.v3`, `github.com/lib/pq`). Every protocol
     tool limited to allowed hosts (private IPs blocked by default).
   - `email` / `smtp` / `imap`: `send_email`, `list_emails`, `read_email`,
     `mark_read`.
+  - `shell`: `run` executes commands in a working directory on the host,
+    either through bash or, with `allow`, only listed programs without a
+    shell. Single-tenant only, see [Shell](#shell).
   - `system` (built in): `now`.
 - **Triggers:** HTTP (JSON or SSE streaming), an OpenAI-compatible
   `/v1/chat/completions` (the agent name is the model), MCP (each agent is
@@ -133,6 +136,22 @@ Admin (with `server.auth_token`): `GET/POST /v1/admin/tenants`,
 `GET/PATCH/DELETE /v1/admin/tenants/{id}` (plan, limits override, disable),
 `POST /v1/admin/tenants/{id}/keys`, `GET /v1/admin/stats`. The admin token
 with `X-Tenant: <id>` acts as that tenant (support).
+
+## Install (Linux)
+
+Every tag `v*` publishes static binaries for `linux/amd64` and `linux/arm64`
+with `SHA256SUMS` (tags with a `-` are pre-releases). The repository is
+private, so download with `gh`:
+
+```bash
+gh release download v0.1.0-rc.1 -R getitdone-gmbh/agentd -p '*linux_amd64*' -p SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+tar xzf agentd_*_linux_amd64.tar.gz && cd agentd_*_linux_amd64
+./agentd -version
+```
+
+The archive contains `README.md`, `agents.yaml` and `examples/`. Build a
+release locally with `make release`.
 
 ## Quick start
 
@@ -229,8 +248,48 @@ postgres backend: shared by all replicas and covered by its backups).
   control characters are refused. Downloads are always sent as attachments
   with `nosniff`, never rendered on the API origin.
 
-There is deliberately no shell and no host file system: agents of many
-tenants share one process.
+In multi-tenant mode there is deliberately no shell and no host file
+system: agents of many tenants share one process.
+
+## Shell
+
+On a machine of your own (a home server, a dev box) an agent may run
+commands through a `shell` connector. You decide in the config what is
+allowed. Full example: `examples/homelab.yaml`.
+
+```yaml
+connectors:
+  sh:
+    type: shell
+    workdir: /home/ai/agent-work   # required; cwd may not leave it (symlinks included)
+    timeout_seconds: 120           # default 30; the whole process group is killed
+    deny: ["sudo *"]               # globs on the command line
+  inspect:
+    type: shell
+    workdir: /home/ai/agent-work
+    allow: [ls, cat, git, df]      # no shell, only these programs
+agents:
+  ops: {tools: ["sh.*"], tool_timeout_seconds: 150}
+```
+
+- **Two modes.** Without `allow` the command line runs as `bash -c`, so
+  pipes, redirects and scripts work; `deny` then only catches the obvious
+  (`sudo x` is caught, `s""udo x` is not). With `allow` there is no shell:
+  the line is split into words, the program must match `allow` by name
+  (`/bin/rm` does not match `rm`), and `;`, `|` and `$(...)` stay literal
+  arguments. Programs that start others (`env`, `xargs`, `find -exec`,
+  `git -c`) reopen the door, so keep them off the list when that matters.
+- **Environment.** Commands get only `PATH`, `HOME`, `USER`, `LANG`, `TZ`
+  and friends plus `env`; agentd's own API keys and tokens stay out unless
+  `inherit_env: true`.
+- **Limits.** Per command `timeout_seconds` and `max_output` bytes per
+  stream; set the agent's `tool_timeout_seconds` above the connector timeout.
+- **Not a sandbox.** Commands run with agentd's user rights. Run agentd as
+  a dedicated unprivileged user, or in a container or VM, when the machine
+  matters.
+- **Never multi-tenant.** agentd refuses the connector when
+  `tenancy.enabled` is true (a child can read the parent's environment via
+  `/proc`) and refuses it in every tenant document regardless of plan.
 
 ## Email agents
 

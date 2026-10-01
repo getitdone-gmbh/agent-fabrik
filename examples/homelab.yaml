@@ -1,0 +1,50 @@
+# Single owner on your own machine (e.g. a Linux box for local AI) with an
+# agent that may run commands. Never combine with tenancy: agentd refuses
+# a shell connector when tenancy.enabled is true.
+#
+#   mkdir -p ~/agent-work && export AGENT_WORKDIR=~/agent-work
+#   export AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24)
+#   ./bin/agentd -config examples/homelab.yaml
+#
+# Run agentd as its own unprivileged user: commands run with its rights.
+server:
+  addr: "127.0.0.1:${PORT:-8080}"   # local only; put a reverse proxy in front for more
+  auth_token: ${AGENT_RUNTIME_TOKEN:?set AGENT_RUNTIME_TOKEN}
+
+providers:
+  local:
+    type: ollama
+    base_url: ${OLLAMA_URL:-http://localhost:11434}
+    model: ${OLLAMA_MODEL:-qwen3:32b}
+
+connectors:
+  # Full shell: pipes, redirects, scripts. deny is a guardrail, not a fence.
+  sh:
+    type: shell
+    workdir: ${AGENT_WORKDIR:?set AGENT_WORKDIR, e.g. ~/agent-work}
+    timeout_seconds: 120
+    # max_output: 32768           # bytes per stream (stdout, stderr)
+    # shell: /bin/bash            # default: bash, else /bin/sh
+    # inherit_env: false          # true passes agentd's env (API keys!) on
+    # env: {GIT_AUTHOR_NAME: agent}
+    deny: ["sudo *", "*rm -rf /*", "*shutdown*", "*reboot*"]
+
+  # Allowlist instead: no shell at all, only these programs run, and
+  # ";", "|", "$(...)" are passed as plain arguments.
+  inspect:
+    type: shell
+    workdir: ${AGENT_WORKDIR:?set AGENT_WORKDIR, e.g. ~/agent-work}
+    allow: [ls, cat, head, tail, grep, df, du, free, uptime, nvidia-smi, git]
+
+agents:
+  ops:
+    description: Runs commands on this machine.
+    system: |
+      You operate this Linux machine through the sh tool. Explain what a
+      command does before running anything that changes state.
+    tools: ["system.*", "sh.*"]
+    tool_timeout_seconds: 150     # must exceed the connector's timeout_seconds
+
+  status:
+    description: Read-only look at the machine.
+    tools: ["system.*", "inspect.*"]

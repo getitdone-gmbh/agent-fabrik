@@ -239,8 +239,19 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 		}
 		c.IMAPConfig.Dial = dial
 		return tools.NewEmailConnector(name, tools.EmailConfig{IMAP: &c.IMAPConfig, ReadOnly: c.ReadOnly})
+	case "shell":
+		if guarded {
+			// Tenants share this process: a shell would reach every tenant's secrets.
+			return nil, fmt.Errorf("connector %q: shell is not available in multi-tenant mode", name)
+		}
+		var c tools.ShellConfig
+		if err := cc.Decode(&c); err != nil {
+			return nil, err
+		}
+		log.Warn("shell connector enabled: agents can run commands on this machine", "connector", name, "workdir", c.Workdir, "allow", c.Allow)
+		return tools.NewShellConnector(name, c)
 	}
-	return nil, fmt.Errorf("connector %q: unknown type %q (mcp, http, email, smtp, imap)", name, cc.Type)
+	return nil, fmt.Errorf("connector %q: unknown type %q (mcp, http, email, smtp, imap, shell)", name, cc.Type)
 }
 
 // Run executes an agent, bounded by the global concurrency limit.

@@ -184,6 +184,11 @@ func (l Limits) check(c *Config) []string {
 		allowedTypes[strings.ToLower(t)] = true
 	}
 	for name, cc := range c.Connectors {
+		if cc.Type == "shell" {
+			// Never on a plan: tenants share one process.
+			errs = append(errs, fmt.Sprintf("connector %q: type shell is not allowed in multi-tenant mode", name))
+			continue
+		}
 		if len(allowedTypes) > 0 && !allowedTypes[cc.Type] {
 			errs = append(errs, fmt.Sprintf("connector %q: type %q is not allowed on your plan", name, cc.Type))
 		}

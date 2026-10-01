@@ -150,7 +150,8 @@ func TestShippedConfigsParse(t *testing.T) {
 	t.Setenv("AGENT_RUNTIME_TOKEN", "x")
 	t.Setenv("DATABASE_URL", "postgres://x")
 	t.Setenv("RUNTIME_SECRET_KEY", "k")
-	for _, p := range []string{"../../agents.yaml", "../../examples/full.yaml", "../../examples/multitenant.yaml"} {
+	t.Setenv("AGENT_WORKDIR", "/tmp")
+	for _, p := range []string{"../../agents.yaml", "../../examples/full.yaml", "../../examples/multitenant.yaml", "../../examples/homelab.yaml"} {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
@@ -207,5 +208,30 @@ agents:
 	ok := "agents:\n  a: {provider: shared, system: hi}\n"
 	if _, err := ParseWith([]byte(ok), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"shared"}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestShellNeverMultiTenant(t *testing.T) {
+	tenantDoc := "connectors:\n  sh: {type: shell, workdir: /tmp}\nagents:\n  a: {provider: shared, system: hi}\n"
+	lim := Limits{} // even a plan that allows every connector type
+	_, err := ParseWith([]byte(tenantDoc), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"shared"}})
+	if err == nil || !strings.Contains(err.Error(), "type shell is not allowed") {
+		t.Errorf("tenant shell: %v", err)
+	}
+	operatorDoc := `
+providers:
+  p: {type: ollama, base_url: "http://localhost:11434", model: m}
+connectors:
+  sh: {type: shell, workdir: /tmp}
+agents:
+  a: {provider: p, tools: ["sh.*"]}
+tenancy:
+  enabled: true
+`
+	if _, err := Parse([]byte(operatorDoc)); err == nil || !strings.Contains(err.Error(), "shell is not allowed with tenancy.enabled") {
+		t.Errorf("operator shell with tenancy: %v", err)
+	}
+	if _, err := Parse([]byte(strings.Replace(operatorDoc, "enabled: true", "enabled: false", 1))); err != nil {
+		t.Errorf("single-tenant shell must parse: %v", err)
 	}
 }

@@ -237,9 +237,14 @@ func (c *Config) validate(opts ParseOptions) error {
 			errs = append(errs, err.Error())
 		}
 	}
-	for name := range c.Connectors {
+	for _, name := range sortedKeys(c.Connectors) {
 		if !nameRe.MatchString(name) {
 			errs = append(errs, fmt.Sprintf("connector name %q must match %s", name, nameRe))
+		}
+		if c.Connectors[name].Type == "shell" && c.Tenancy.Enabled {
+			// A child process can read the parent's environment via /proc,
+			// so even an operator agent's shell would expose every tenant.
+			errs = append(errs, fmt.Sprintf("connector %q: shell is not allowed with tenancy.enabled", name))
 		}
 	}
 	if _, err := time.ParseDuration(c.Memory.TTL); c.Memory.TTL != "" && err != nil {
