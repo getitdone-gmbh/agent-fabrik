@@ -283,3 +283,43 @@ func TestSessionLockAcrossReplicas(t *testing.T) {
 	}
 	unlock()
 }
+
+// A held session lease must not pin a pooled connection for the run, and a
+// replica that dies while holding one must not block the session forever.
+func TestSessionLeaseHoldsNoConnectionAndExpires(t *testing.T) {
+	url := testutil.PostgresURL(t, "store")
+	if url == "" {
+		t.Skip("AR_TEST_DATABASE_URL not set")
+	}
+	oldTTL, oldRenew := leaseTTL, leaseRenew
+	leaseTTL, leaseRenew = 400*time.Millisecond, time.Hour // the "dead" holder never renews
+	defer func() { leaseTTL, leaseRenew = oldTTL, oldRenew }()
+	ctx := context.Background()
+	r1, err := NewPostgres(ctx, url, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1.Close()
+	r2, err := NewPostgres(ctx, url, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	if _, err := r1.Sessions().(agent.Locker).LockSession(ctx, "t/a", "lease"); err != nil {
+		t.Fatal(err)
+	}
+	if n := r1.db.Stats().InUse; n != 0 {
+		t.Errorf("held lease pins %d connection(s)", n)
+	}
+	start := time.Now()
+	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	unlock, err := r2.Sessions().(agent.Locker).LockSession(wctx, "t/a", "lease")
+	if err != nil {
+		t.Fatalf("lease of a dead holder never expired: %v", err)
+	}
+	unlock()
+	if d := time.Since(start); d < 300*time.Millisecond {
+		t.Errorf("second replica got the session after %v, before the lease ran out", d)
+	}
+}

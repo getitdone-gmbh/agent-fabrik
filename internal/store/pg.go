@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,6 +81,11 @@ CREATE TABLE IF NOT EXISTS ar_sessions (
   expires_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ar_sessions_expires ON ar_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS ar_session_leases (
+  key text PRIMARY KEY,
+  holder text NOT NULL,
+  expires_at timestamptz NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ar_files (
   tenant_id text NOT NULL REFERENCES ar_tenants(id) ON DELETE CASCADE,
   path text NOT NULL,
@@ -499,22 +506,71 @@ func (s *pgSessions) Save(ctx context.Context, agentName, session string, msgs [
 	return err
 }
 
+// Session leases: how long one lasts without renewal, how often the holder
+// renews it, and how often a waiting replica asks again.
+var (
+	leaseTTL   = 90 * time.Second
+	leaseRenew = 30 * time.Second
+	leasePoll  = time.Second
+)
+
 // LockSession serializes runs of one session across replicas (otherwise the
-// second run would overwrite the first one's turn). It holds a
-// transaction-level advisory lock in an open transaction for the duration of
-// the run, which also works behind PgBouncer in transaction mode. Ending the
-// transaction releases the lock, even if the connection breaks.
+// second run would overwrite the first one's turn). It takes a lease row
+// instead of holding a transaction open for the whole run: a run lasts
+// minutes, mostly waiting on the model, and an open transaction per run
+// pinned a pooled connection each until auth and usage writes of every
+// tenant stalled. The holder renews the lease while it runs; if the replica
+// dies, the lease simply expires. All times are the database's, so replica
+// clocks do not matter.
 func (s *pgSessions) LockSession(ctx context.Context, agentName, session string) (func(), error) {
-	tx, err := s.db.BeginTx(context.WithoutCancel(ctx), nil)
-	if err != nil {
-		return nil, err
+	key := sessionKey(agentName, session)
+	holder := newHolderID()
+	for wait := 100 * time.Millisecond; ; wait = min(wait*2, leasePoll) {
+		var got string
+		err := s.db.QueryRowContext(ctx, `INSERT INTO ar_session_leases (key, holder, expires_at)
+			VALUES ($1, $2, now() + $3 * interval '1 millisecond')
+			ON CONFLICT (key) DO UPDATE SET holder=EXCLUDED.holder, expires_at=EXCLUDED.expires_at
+			WHERE ar_session_leases.expires_at < now()
+			RETURNING holder`, key, holder, leaseTTL.Milliseconds()).Scan(&got)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		select { // held by another run: ask again
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	key := "session:" + sessionKey(agentName, session)
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-	return func() { _ = tx.Rollback() }, nil
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(leaseRenew)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				_, _ = s.db.Exec(`UPDATE ar_session_leases SET expires_at = now() + $3 * interval '1 millisecond'
+					WHERE key=$1 AND holder=$2`, key, holder, leaseTTL.Milliseconds())
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+		_, _ = s.db.Exec(`DELETE FROM ar_session_leases WHERE key=$1 AND holder=$2`, key, holder)
+	}, nil
+}
+
+func newHolderID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (s *pgSessions) Delete(ctx context.Context, agentName, session string) error {
