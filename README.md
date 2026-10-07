@@ -204,7 +204,7 @@ runtime logs a warning and the API is open. Only use that locally.
 | `DELETE /v1/agents/{name}/sessions/{id}` | forget a session |
 | `POST /v1/chat/completions`, `GET /v1/models` | OpenAI-compatible; `model` is the agent name |
 | `POST /mcp` | MCP server: every exposed agent is a tool (`input`, `session_id`) |
-| `POST /v1/hooks/{agent}[/{name}]` | webhook trigger (`X-Hub-Signature-256`, `X-Webhook-Secret` or `?secret=`) |
+| `POST /v1/hooks/{agent}[/{name}]` | webhook trigger (`X-Hub-Signature-256`, `X-Webhook-Secret`; `?secret=` only for operator hooks, never for tenants) |
 
 ```bash
 curl -s localhost:8080/v1/agents/chat/run \

@@ -78,7 +78,7 @@ func (p *poller) poll(ctx context.Context, env Env) error {
 	}
 	max := p.t.MaxPerPoll
 	if max <= 0 {
-		max = 10
+		max = 5 // the tenant cap (config.TenantMaxPerPoll); operators may set more
 	}
 	var batch []inbound
 	var skip []uint32
@@ -93,17 +93,15 @@ func (p *poller) poll(ctx context.Context, env Env) error {
 			uids = uids[:max]
 		}
 		for _, uid := range uids {
-			raw, err := c.FetchRaw(uid)
-			if err != nil {
-				return err
-			}
-			e, err := imail.ParseEmail(raw)
-			if err != nil {
+			e, err := c.FetchEmail(uid)
+			if errors.Is(err, imail.ErrUnparseable) {
 				p.log.Warn("unparseable email, skipping", "uid", uid, "err", err)
 				skip = append(skip, uid)
 				continue
 			}
-			e.UID = uid
+			if err != nil {
+				return err
+			}
 			if e.IsAutomated() || !p.senderAllowed(e.From) {
 				p.log.Info("ignoring email", "uid", uid, "from", e.From, "automated", e.IsAutomated())
 				skip = append(skip, uid)

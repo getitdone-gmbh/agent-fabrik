@@ -52,7 +52,9 @@ type Manager struct {
 	system *app.App
 	shared map[string]llm.Provider
 	global chan struct{}
-	sched  *triggers.Scheduler
+	// fileSlots bounds whole files held in memory at once (see Files.Hold).
+	fileSlots chan struct{}
+	sched     *triggers.Scheduler
 
 	mu       sync.Mutex
 	runtimes map[string]*runtime
@@ -96,15 +98,16 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, system *app.Ap
 	}
 	m := &Manager{
 		cfg: cfg, st: st, box: box, log: log, ctx: ctx, system: system,
-		shared:   map[string]llm.Provider{},
-		global:   make(chan struct{}, max(cfg.Server.MaxConcurrentRuns, 1)),
-		runtimes: map[string]*runtime{},
-		building: map[string]*sync.Mutex{},
-		limiters: map[string]*bucket{},
-		usage:    map[string]*usageCounter{},
-		tenants:  map[string]cachedTenant{},
-		synced:   map[string]int64{},
-		keys:     newKeyCache(),
+		shared:    map[string]llm.Provider{},
+		global:    make(chan struct{}, max(cfg.Server.MaxConcurrentRuns, 1)),
+		fileSlots: make(chan struct{}, maxFileTransfers),
+		runtimes:  map[string]*runtime{},
+		building:  map[string]*sync.Mutex{},
+		limiters:  map[string]*bucket{},
+		usage:     map[string]*usageCounter{},
+		tenants:   map[string]cachedTenant{},
+		synced:    map[string]int64{},
+		keys:      newKeyCache(),
 	}
 	for _, name := range cfg.Tenancy.SharedProviders {
 		pc := cfg.Providers[name]
@@ -734,15 +737,21 @@ func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.
 		return nil, err
 	}
 	defer release()
+	var gate func(context.Context) (func(), error)
 	if tenantID != System {
-		select {
-		case m.global <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		// The tenant's own slot is taken first (inside RunThen), the shared
+		// one only after it: a run waiting on its tenant's cap holds nothing
+		// other tenants need.
+		gate = func(ctx context.Context) (func(), error) {
+			select {
+			case m.global <- struct{}{}:
+				return func() { <-m.global }, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
-		defer func() { <-m.global }()
 	}
-	res, err := a.Run(ctx, agentName, in)
+	res, err := a.RunThen(ctx, agentName, in, gate)
 	if res != nil && tenantID != System {
 		m.recordUsage(tenantID, res.Usage)
 	}

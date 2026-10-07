@@ -81,7 +81,7 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 	}
 	for name, pc := range cfg.Providers {
 		if opts.Guarded {
-			pc.Transport = netguard.Transport
+			pc.Transport = netguard.TenantTransport
 		}
 		p, err := llm.New(name, pc)
 		if err != nil {
@@ -195,7 +195,7 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 			return nil, err
 		}
 		if guarded {
-			c.Transport, c.DenyCommands = netguard.Transport, true
+			c.Transport, c.DenyCommands = netguard.TenantTransport, true
 		}
 		return tools.NewMCPConnector(name, c, log)
 	case "http":
@@ -204,7 +204,7 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 			return nil, err
 		}
 		if guarded {
-			c.Transport = netguard.Transport
+			c.Transport = netguard.TenantTransport
 		}
 		return tools.NewHTTPConnector(name, c)
 	case "email":
@@ -217,6 +217,9 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 		}
 		if c.IMAP != nil {
 			c.IMAP.Dial = dial
+			if guarded {
+				c.IMAP.MaxMessageBytes = config.TenantMaxMailBytes
+			}
 		}
 		return tools.NewEmailConnector(name, c)
 	case "smtp":
@@ -238,6 +241,9 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 			return nil, err
 		}
 		c.IMAPConfig.Dial = dial
+		if guarded {
+			c.IMAPConfig.MaxMessageBytes = config.TenantMaxMailBytes
+		}
 		return tools.NewEmailConnector(name, tools.EmailConfig{IMAP: &c.IMAPConfig, ReadOnly: c.ReadOnly})
 	case "shell":
 		if guarded {
@@ -254,8 +260,15 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 	return nil, fmt.Errorf("connector %q: unknown type %q (mcp, http, email, smtp, imap, shell)", name, cc.Type)
 }
 
-// Run executes an agent, bounded by the global concurrency limit.
+// Run executes an agent, bounded by the app's concurrency limit.
 func (a *App) Run(ctx context.Context, name string, in agent.RunInput) (*agent.RunResult, error) {
+	return a.RunThen(ctx, name, in, nil)
+}
+
+// RunThen is Run with a gate that is passed only after the app's own slot is
+// held. The tenant manager uses it for the process-wide slots: taking those
+// first let a tenant over its own cap park runs on them and starve everyone.
+func (a *App) RunThen(ctx context.Context, name string, in agent.RunInput, gate func(context.Context) (func(), error)) (*agent.RunResult, error) {
 	ag, ok := a.Agents[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", name)
@@ -266,6 +279,13 @@ func (a *App) Run(ctx context.Context, name string, in agent.RunInput) (*agent.R
 		return nil, ctx.Err()
 	}
 	defer func() { <-a.sem }()
+	if gate != nil {
+		release, err := gate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
 	return ag.Run(ctx, in)
 }
 

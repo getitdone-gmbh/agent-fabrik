@@ -14,6 +14,23 @@ type Files struct {
 	st     store.FileStore
 	tenant string
 	quota  store.FileQuota
+	slots  chan struct{}
+}
+
+// maxFileTransfers is how many whole files a replica holds in memory at
+// once. Files live in Postgres and are read and written in one piece, so
+// without a bound a few parallel 25 MB uploads exceed the pod's memory.
+const maxFileTransfers = 2
+
+// Hold waits for one of the replica's file-transfer slots. Callers that
+// read or receive a whole file hold it until the bytes are gone.
+func (f *Files) Hold(ctx context.Context) (func(), error) {
+	select {
+	case f.slots <- struct{}{}:
+		return func() { <-f.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Files returns the tenant's file storage.
@@ -27,7 +44,7 @@ func (m *Manager) Files(ctx context.Context, tenant string) (*Files, error) {
 
 func (m *Manager) filesFor(t *store.Tenant) *Files {
 	files, fileBytes, total := m.Limits(t).FileLimits()
-	return &Files{st: m.st, tenant: t.ID, quota: store.FileQuota{MaxFiles: files, MaxFileBytes: fileBytes, MaxTotalBytes: total}}
+	return &Files{st: m.st, tenant: t.ID, slots: m.fileSlots, quota: store.FileQuota{MaxFiles: files, MaxFileBytes: fileBytes, MaxTotalBytes: total}}
 }
 
 // Quota reports the limits (0 = unlimited).
@@ -91,6 +108,11 @@ func (f *Files) List(ctx context.Context, prefix string) ([]tools.FileInfo, erro
 }
 
 func (f *Files) Read(ctx context.Context, path string) (tools.FileInfo, []byte, error) {
+	release, err := f.Hold(ctx)
+	if err != nil {
+		return tools.FileInfo{}, nil, err
+	}
+	defer release()
 	x, data, err := f.Get(ctx, path)
 	if err != nil {
 		if err == store.ErrNotFound {

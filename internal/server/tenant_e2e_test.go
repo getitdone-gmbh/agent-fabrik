@@ -351,6 +351,12 @@ secrets:
 		t.Errorf("tenant webhook without secret: %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+	// The secret in the URL lands in ingress logs: only operator hooks take it.
+	resp, _ = http.Post(e.url+"/v1/tenants/"+acme+"/hooks/helper/gh?secret=hook-secret", "application/json", strings.NewReader(`{}`))
+	if resp.StatusCode != 401 {
+		t.Errorf("tenant webhook with ?secret=: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
 
 	// Scheduler: acme's interval trigger fires without any pod per agent.
 	deadline := time.Now().Add(5 * time.Second)
