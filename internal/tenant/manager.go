@@ -52,7 +52,9 @@ type Manager struct {
 	system *app.App
 	shared map[string]llm.Provider
 	global chan struct{}
-	sched  *triggers.Scheduler
+	// fileSlots bounds whole files held in memory at once (see Files.Hold).
+	fileSlots chan struct{}
+	sched     *triggers.Scheduler
 
 	mu       sync.Mutex
 	runtimes map[string]*runtime
@@ -96,15 +98,16 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, system *app.Ap
 	}
 	m := &Manager{
 		cfg: cfg, st: st, box: box, log: log, ctx: ctx, system: system,
-		shared:   map[string]llm.Provider{},
-		global:   make(chan struct{}, max(cfg.Server.MaxConcurrentRuns, 1)),
-		runtimes: map[string]*runtime{},
-		building: map[string]*sync.Mutex{},
-		limiters: map[string]*bucket{},
-		usage:    map[string]*usageCounter{},
-		tenants:  map[string]cachedTenant{},
-		synced:   map[string]int64{},
-		keys:     newKeyCache(),
+		shared:    map[string]llm.Provider{},
+		global:    make(chan struct{}, max(cfg.Server.MaxConcurrentRuns, 1)),
+		fileSlots: make(chan struct{}, maxFileTransfers),
+		runtimes:  map[string]*runtime{},
+		building:  map[string]*sync.Mutex{},
+		limiters:  map[string]*bucket{},
+		usage:     map[string]*usageCounter{},
+		tenants:   map[string]cachedTenant{},
+		synced:    map[string]int64{},
+		keys:      newKeyCache(),
 	}
 	for _, name := range cfg.Tenancy.SharedProviders {
 		pc := cfg.Providers[name]

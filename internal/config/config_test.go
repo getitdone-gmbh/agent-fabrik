@@ -235,3 +235,27 @@ tenancy:
 		t.Errorf("single-tenant shell must parse: %v", err)
 	}
 }
+
+// Settings that let one tenant hold megabytes in the shared process.
+func TestTenantMemoryCaps(t *testing.T) {
+	doc := `
+connectors:
+  api: {type: http, base_url: "https://example.com", max_response_bytes: 33554432}
+  mail: {type: imap, host: imap.example.com, username: u, password: p}
+agents:
+  a:
+    provider: shared
+    triggers:
+      - {type: imap, connector: mail, every: 5m, max_per_poll: 500}
+`
+	lim := DefaultLimits()
+	_, err := ParseWith([]byte(doc), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"shared"}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"max_response_bytes 33554432 exceeds", "max_per_poll 500 exceeds"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in: %v", want, err)
+		}
+	}
+}

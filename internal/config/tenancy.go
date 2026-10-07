@@ -130,6 +130,11 @@ const (
 	TenantMaxParallelTools = 4
 	TenantMaxHistory       = 100
 	TenantMaxTokens        = 8192
+	// Memory: tenants share one process and its limit, so what one poll or
+	// tool call may hold in RAM is capped (see also netguard.TenantTransport).
+	TenantMaxPerPoll      = 5
+	TenantMaxMailBytes    = 5 << 20
+	TenantMaxHTTPResponse = 1 << 20
 )
 
 // DefaultLimits are conservative limits used when no plan matches.
@@ -193,8 +198,9 @@ func (l Limits) check(c *Config) []string {
 			errs = append(errs, fmt.Sprintf("connector %q: type %q is not allowed on your plan", name, cc.Type))
 		}
 		var pol struct {
-			Command      []string `yaml:"command"`
-			AllowPrivate bool     `yaml:"allow_private"`
+			Command          []string `yaml:"command"`
+			AllowPrivate     bool     `yaml:"allow_private"`
+			MaxResponseBytes int      `yaml:"max_response_bytes"`
 		}
 		_ = cc.Decode(&pol)
 		if len(pol.Command) > 0 {
@@ -202,6 +208,9 @@ func (l Limits) check(c *Config) []string {
 		}
 		if pol.AllowPrivate {
 			errs = append(errs, fmt.Sprintf("connector %q: allow_private is not allowed", name))
+		}
+		if pol.MaxResponseBytes > TenantMaxHTTPResponse {
+			errs = append(errs, fmt.Sprintf("connector %q: max_response_bytes %d exceeds limit %d", name, pol.MaxResponseBytes, TenantMaxHTTPResponse))
 		}
 	}
 	minSched, minPoll := l.MinSchedule(), l.MinPoll()
@@ -244,6 +253,9 @@ func (l Limits) check(c *Config) []string {
 				d := dur(t.Every, time.Minute)
 				if minPoll > 0 && d < minPoll {
 					errs = append(errs, fmt.Sprintf("%s: poll interval %v below minimum %v", where, d, minPoll))
+				}
+				if t.MaxPerPoll > TenantMaxPerPoll {
+					errs = append(errs, fmt.Sprintf("%s: max_per_poll %d exceeds limit %d", where, t.MaxPerPoll, TenantMaxPerPoll))
 				}
 			case "webhook":
 				if t.Secret == "" {

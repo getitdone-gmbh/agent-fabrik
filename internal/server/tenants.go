@@ -498,6 +498,11 @@ func (s *Server) getFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, err := f.Hold(r.Context())
+	if err != nil {
+		return
+	}
+	defer release()
 	info, data, err := f.Get(r.Context(), r.PathValue("path"))
 	if err != nil {
 		fail(w, err)
@@ -521,6 +526,16 @@ func (s *Server) putFile(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 1 << 30
 	}
+	if r.ContentLength > limit {
+		// Refused before waiting for a slot or reading a byte.
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large: limit is %d bytes per file", limit))
+		return
+	}
+	release, err := f.Hold(r.Context())
+	if err != nil {
+		return
+	}
+	defer release()
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large: limit is %d bytes per file", limit))
