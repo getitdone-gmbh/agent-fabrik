@@ -41,6 +41,9 @@ dependencies (`gopkg.in/yaml.v3`, `github.com/lib/pq`). Every protocol
     tool limited to allowed hosts (private IPs blocked by default).
   - `email` / `smtp` / `imap`: `send_email`, `list_emails`, `read_email`,
     `mark_read`.
+  - `shell`: `run` executes commands in a working directory on the host,
+    either through bash or, with `allow`, only listed programs without a
+    shell. Single-tenant only, see [Shell](#shell).
   - `system` (built in): `now`.
 - **Triggers:** HTTP (JSON or SSE streaming), an OpenAI-compatible
   `/v1/chat/completions` (the agent name is the model), MCP (each agent is
@@ -109,7 +112,11 @@ or set `TENANCY_ENABLED=true` with the embedded config. Then:
 - **Scale-out:** with the Postgres store, run several replicas behind the
   service. Runs are served by any replica. Exactly one replica (a Postgres
   advisory lock) runs the scheduler, picks up changes from all replicas, and
-  fails over automatically.
+  fails over automatically. Runs of one session are serialized across
+  replicas with a Postgres lock, and per-process limits (runs per minute,
+  concurrent runs) are split by `tenancy.replicas` (`AGENT_REPLICAS`). All
+  locks are transaction-scoped, so the store also works behind PgBouncer in
+  transaction mode.
 - The agents in the config file keep working as the read-only **system**
   tenant, reached with the admin token.
 
@@ -129,6 +136,22 @@ Admin (with `server.auth_token`): `GET/POST /v1/admin/tenants`,
 `GET/PATCH/DELETE /v1/admin/tenants/{id}` (plan, limits override, disable),
 `POST /v1/admin/tenants/{id}/keys`, `GET /v1/admin/stats`. The admin token
 with `X-Tenant: <id>` acts as that tenant (support).
+
+## Install (Linux)
+
+Every tag `v*` publishes static binaries for `linux/amd64` and `linux/arm64`
+with `SHA256SUMS` (tags with a `-` are pre-releases). The repository is
+private, so download with `gh`:
+
+```bash
+gh release download v0.1.0-rc.1 -R getitdone-gmbh/agentd -p '*linux_amd64*' -p SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+tar xzf agentd_*_linux_amd64.tar.gz && cd agentd_*_linux_amd64
+./agentd -version
+```
+
+The archive contains `README.md`, `agents.yaml` and `examples/`. Build a
+release locally with `make release`.
 
 ## Quick start
 
@@ -181,7 +204,7 @@ runtime logs a warning and the API is open. Only use that locally.
 | `DELETE /v1/agents/{name}/sessions/{id}` | forget a session |
 | `POST /v1/chat/completions`, `GET /v1/models` | OpenAI-compatible; `model` is the agent name |
 | `POST /mcp` | MCP server: every exposed agent is a tool (`input`, `session_id`) |
-| `POST /v1/hooks/{agent}[/{name}]` | webhook trigger (`X-Hub-Signature-256`, `X-Webhook-Secret` or `?secret=`) |
+| `POST /v1/hooks/{agent}[/{name}]` | webhook trigger (`X-Hub-Signature-256`, `X-Webhook-Secret`; `?secret=` only for operator hooks, never for tenants) |
 
 ```bash
 curl -s localhost:8080/v1/agents/chat/run \
@@ -198,6 +221,75 @@ claude mcp add --transport http agents https://agents.example.com/mcp \
 
 Flags: `-config`, `-check`, `-chat <agent>`, `-run <agent> -input "..."`
 (or stdin), `-version`.
+
+## Files
+
+Every tenant has its own file storage (in the store, so Postgres with the
+postgres backend: shared by all replicas and covered by its backups).
+
+- Agents use it with `tools: ["files.*"]`: `files__list`, `files__read`
+  (text, in pieces for long files), `files__write` (create, overwrite or
+  append), `files__delete`. Grant only reading with
+  `tools: ["files.list", "files.read"]`.
+- The API uploads and downloads raw bytes, so users can hand agents
+  documents and fetch their results:
+
+  ```bash
+  curl -X PUT $RT/v1/files/kunden/liste.csv -H "Authorization: Bearer $KEY" --data-binary @liste.csv
+  curl $RT/v1/files?prefix=reports/ -H "Authorization: Bearer $KEY"
+  curl $RT/v1/files/reports/2026-09.md -H "Authorization: Bearer $KEY"
+  ```
+
+- Plans cap it: `max_files`, `max_file_mb`, `max_storage_mb` (defaults 500,
+  5 and 50; `-1` = unlimited). The quota is checked in the same transaction
+  as the write, so parallel uploads cannot overshoot it. `GET /v1/me` reports
+  usage.
+- Paths are relative (`reports/2026-09.md`); `..`, absolute paths and
+  control characters are refused. Downloads are always sent as attachments
+  with `nosniff`, never rendered on the API origin.
+
+In multi-tenant mode there is deliberately no shell and no host file
+system: agents of many tenants share one process.
+
+## Shell
+
+On a machine of your own (a home server, a dev box) an agent may run
+commands through a `shell` connector. You decide in the config what is
+allowed. Full example: `examples/homelab.yaml`.
+
+```yaml
+connectors:
+  sh:
+    type: shell
+    workdir: /home/ai/agent-work   # required; cwd may not leave it (symlinks included)
+    timeout_seconds: 120           # default 30; the whole process group is killed
+    deny: ["sudo *"]               # globs on the command line
+  inspect:
+    type: shell
+    workdir: /home/ai/agent-work
+    allow: [ls, cat, git, df]      # no shell, only these programs
+agents:
+  ops: {tools: ["sh.*"], tool_timeout_seconds: 150}
+```
+
+- **Two modes.** Without `allow` the command line runs as `bash -c`, so
+  pipes, redirects and scripts work; `deny` then only catches the obvious
+  (`sudo x` is caught, `s""udo x` is not). With `allow` there is no shell:
+  the line is split into words, the program must match `allow` by name
+  (`/bin/rm` does not match `rm`), and `;`, `|` and `$(...)` stay literal
+  arguments. Programs that start others (`env`, `xargs`, `find -exec`,
+  `git -c`) reopen the door, so keep them off the list when that matters.
+- **Environment.** Commands get only `PATH`, `HOME`, `USER`, `LANG`, `TZ`
+  and friends plus `env`; agentd's own API keys and tokens stay out unless
+  `inherit_env: true`.
+- **Limits.** Per command `timeout_seconds` and `max_output` bytes per
+  stream; set the agent's `tool_timeout_seconds` above the connector timeout.
+- **Not a sandbox.** Commands run with agentd's user rights. Run agentd as
+  a dedicated unprivileged user, or in a container or VM, when the machine
+  matters.
+- **Never multi-tenant.** agentd refuses the connector when
+  `tenancy.enabled` is true (a child can read the parent's environment via
+  `/proc`) and refuses it in every tenant document regardless of plan.
 
 ## Email agents
 
@@ -229,7 +321,8 @@ to tenants. Scale replicas for throughput, not per agent.
 | Docker Compose (runtime + Postgres) | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml) |
 | Kubernetes (2 replicas, hardened pod) | [`deploy/kubernetes/agentd.yaml`](deploy/kubernetes/agentd.yaml) |
 | Cloud Native Buildpacks (`pack`, kpack, Heroku-style PaaS) | `go.mod` at the root + [`project.toml`](project.toml); listens on `$PORT` |
-| ITDone Cloud | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
+| ITDone Cloud (as a customer app) | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
+| ITDone's own agent runtime | ArgoCD, `infra/k8s/envs/itdone-cloud/itdone-agentd/` in itdone-cloud; image built by [`.github/workflows/image.yml`](.github/workflows/image.yml) |
 
 For a single-tenant setup, leave `TENANCY_ENABLED` unset; no database is
 needed. For custom configs, mount a file (`-config`, `AGENT_CONFIG`) or pass

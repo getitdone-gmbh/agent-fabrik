@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,8 +27,8 @@ type Postgres struct {
 	sessionTTL time.Duration
 	sessions   *pgSessions
 
-	lockMu   sync.Mutex
-	lockConn *sql.Conn
+	lockMu sync.Mutex
+	lockTx *sql.Tx
 }
 
 const leaderLockID = 0x41525254 // "ARRT"
@@ -79,6 +81,20 @@ CREATE TABLE IF NOT EXISTS ar_sessions (
   expires_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ar_sessions_expires ON ar_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS ar_session_leases (
+  key text PRIMARY KEY,
+  holder text NOT NULL,
+  expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ar_files (
+  tenant_id text NOT NULL REFERENCES ar_tenants(id) ON DELETE CASCADE,
+  path text NOT NULL,
+  content_type text NOT NULL DEFAULT '',
+  size bigint NOT NULL,
+  data bytea NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, path)
+);
 `
 
 // NewPostgres connects and migrates the schema.
@@ -108,9 +124,9 @@ func NewPostgres(ctx context.Context, url string, sessionTTL time.Duration) (*Po
 
 func (p *Postgres) Close() error {
 	p.lockMu.Lock()
-	if p.lockConn != nil {
-		p.lockConn.Close()
-		p.lockConn = nil
+	if p.lockTx != nil {
+		_ = p.lockTx.Rollback()
+		p.lockTx = nil
 	}
 	p.lockMu.Unlock()
 	return p.db.Close()
@@ -118,27 +134,36 @@ func (p *Postgres) Close() error {
 
 func (p *Postgres) Sessions() agent.Store { return p.sessions }
 
-// Leader holds a session-level advisory lock on a dedicated connection.
+// Leader holds a transaction-level advisory lock inside a transaction that
+// stays open while this replica leads. Transaction-scoped (not session)
+// locks keep working behind PgBouncer in transaction mode, where a session
+// lock would stay on a pooled server connection and leak to other clients.
 func (p *Postgres) Leader(ctx context.Context) bool {
 	p.lockMu.Lock()
 	defer p.lockMu.Unlock()
-	if p.lockConn != nil {
-		if p.lockConn.PingContext(ctx) == nil {
+	// The caller's ctx may be a request context; a cancelled check must not
+	// cost the leadership, so it uses its own deadline.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if p.lockTx != nil {
+		if _, err := p.lockTx.ExecContext(ctx, `SELECT 1`); err == nil {
 			return true
 		}
-		p.lockConn.Close()
-		p.lockConn = nil
+		_ = p.lockTx.Rollback()
+		p.lockTx = nil
 	}
-	conn, err := p.db.Conn(ctx)
+	// BeginTx's ctx would roll the transaction back when cancelled, so the
+	// transaction lives on a background context.
+	tx, err := p.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return false
 	}
 	var ok bool
-	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, leaderLockID).Scan(&ok); err != nil || !ok {
-		conn.Close()
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1)`, leaderLockID).Scan(&ok); err != nil || !ok {
+		_ = tx.Rollback()
 		return false
 	}
-	p.lockConn = conn
+	p.lockTx = tx
 	return true
 }
 
@@ -481,7 +506,158 @@ func (s *pgSessions) Save(ctx context.Context, agentName, session string, msgs [
 	return err
 }
 
+// Session leases: how long one lasts without renewal, how often the holder
+// renews it, and how often a waiting replica asks again.
+var (
+	leaseTTL   = 90 * time.Second
+	leaseRenew = 30 * time.Second
+	leasePoll  = time.Second
+)
+
+// LockSession serializes runs of one session across replicas (otherwise the
+// second run would overwrite the first one's turn). It takes a lease row
+// instead of holding a transaction open for the whole run: a run lasts
+// minutes, mostly waiting on the model, and an open transaction per run
+// pinned a pooled connection each until auth and usage writes of every
+// tenant stalled. The holder renews the lease while it runs; if the replica
+// dies, the lease simply expires. All times are the database's, so replica
+// clocks do not matter.
+func (s *pgSessions) LockSession(ctx context.Context, agentName, session string) (func(), error) {
+	key := sessionKey(agentName, session)
+	holder := newHolderID()
+	for wait := 100 * time.Millisecond; ; wait = min(wait*2, leasePoll) {
+		var got string
+		err := s.db.QueryRowContext(ctx, `INSERT INTO ar_session_leases (key, holder, expires_at)
+			VALUES ($1, $2, now() + $3 * interval '1 millisecond')
+			ON CONFLICT (key) DO UPDATE SET holder=EXCLUDED.holder, expires_at=EXCLUDED.expires_at
+			WHERE ar_session_leases.expires_at < now()
+			RETURNING holder`, key, holder, leaseTTL.Milliseconds()).Scan(&got)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		select { // held by another run: ask again
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(leaseRenew)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				_, _ = s.db.Exec(`UPDATE ar_session_leases SET expires_at = now() + $3 * interval '1 millisecond'
+					WHERE key=$1 AND holder=$2`, key, holder, leaseTTL.Milliseconds())
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+		_, _ = s.db.Exec(`DELETE FROM ar_session_leases WHERE key=$1 AND holder=$2`, key, holder)
+	}, nil
+}
+
+func newHolderID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
 func (s *pgSessions) Delete(ctx context.Context, agentName, session string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM ar_sessions WHERE key=$1`, sessionKey(agentName, session))
 	return err
+}
+
+// ---------- files ----------
+
+// PutFile writes a file in one transaction that locks the tenant row, so
+// concurrent writes of one tenant (from any replica) cannot both pass the
+// quota check.
+func (p *Postgres) PutFile(ctx context.Context, tenant, path string, data []byte, contentType string, q FileQuota) (File, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return File{}, err
+	}
+	defer tx.Rollback()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM ar_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return File{}, ErrNotFound
+		}
+		return File{}, err
+	}
+	var others FileUsage
+	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(size),0) FROM ar_files WHERE tenant_id=$1 AND path<>$2`,
+		tenant, path).Scan(&others.Files, &others.Bytes); err != nil {
+		return File{}, err
+	}
+	if err := checkQuota(q, others, int64(len(data))); err != nil {
+		return File{}, err
+	}
+	f := File{Path: path, Size: int64(len(data)), ContentType: contentType}
+	if err := tx.QueryRowContext(ctx, `INSERT INTO ar_files (tenant_id, path, content_type, size, data) VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (tenant_id, path) DO UPDATE SET content_type=EXCLUDED.content_type, size=EXCLUDED.size, data=EXCLUDED.data, updated_at=now()
+		RETURNING updated_at`, tenant, path, contentType, f.Size, data).Scan(&f.UpdatedAt); err != nil {
+		return File{}, err
+	}
+	return f, tx.Commit()
+}
+
+func (p *Postgres) GetFile(ctx context.Context, tenant, path string) (File, []byte, error) {
+	f := File{Path: path}
+	var data []byte
+	err := p.db.QueryRowContext(ctx, `SELECT content_type, size, updated_at, data FROM ar_files WHERE tenant_id=$1 AND path=$2`, tenant, path).
+		Scan(&f.ContentType, &f.Size, &f.UpdatedAt, &data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return File{}, nil, ErrNotFound
+	}
+	return f, data, err
+}
+
+func (p *Postgres) ListFiles(ctx context.Context, tenant, prefix string, limit int) ([]File, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := p.db.QueryContext(ctx, `SELECT path, content_type, size, updated_at FROM ar_files
+		WHERE tenant_id=$1 AND path LIKE $2 ORDER BY path LIMIT $3`, tenant, escapeLike(prefix)+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []File{}
+	for rows.Next() {
+		var f File
+		if err := rows.Scan(&f.Path, &f.ContentType, &f.Size, &f.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteFile(ctx context.Context, tenant, path string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM ar_files WHERE tenant_id=$1 AND path=$2`, tenant, path)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) FileUsage(ctx context.Context, tenant string) (FileUsage, error) {
+	var u FileUsage
+	err := p.db.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(size),0) FROM ar_files WHERE tenant_id=$1`, tenant).Scan(&u.Files, &u.Bytes)
+	return u, err
 }

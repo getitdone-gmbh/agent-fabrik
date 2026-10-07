@@ -227,6 +227,11 @@ func (s *Scheduler) fire(ctx context.Context, e *entry, at time.Time) {
 	go func() {
 		defer s.wg.Done()
 		defer e.running.Store(false)
+		defer func() {
+			if r := recover(); r != nil {
+				s.log.Error("scheduled run panicked", "tenant", e.tenant, "panic", r)
+			}
+		}()
 		select {
 		case s.sem <- struct{}{}:
 		case <-ctx.Done():

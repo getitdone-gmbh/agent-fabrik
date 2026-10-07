@@ -7,6 +7,7 @@ package netguard
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -118,3 +119,54 @@ var Transport http.RoundTripper = &http.Transport{
 	ExpectContinueTimeout: time.Second,
 	ResponseHeaderTimeout: 5 * time.Minute,
 }
+
+// TenantMaxResponseBytes caps one response body on TenantTransport. Tenants
+// share one process and its memory limit: without a cap a tenant's own
+// model, MCP or API server could send 32 MB per call, times parallel tools
+// times runs, and take every tenant on the replica down with an OOM kill.
+// 1 MiB is far above any real answer: a model reply is bounded by max_tokens
+// (8192), and tool results are cut to max_tool_output (50 KB) anyway.
+const TenantMaxResponseBytes = 1 << 20
+
+// TenantTransport is Transport with each response body capped at
+// TenantMaxResponseBytes. Reading past the cap fails instead of truncating,
+// so a cut-off JSON body is an error, never a silently partial result.
+var TenantTransport http.RoundTripper = capped{Transport, TenantMaxResponseBytes}
+
+type capped struct {
+	rt  http.RoundTripper
+	max int64
+}
+
+func (c capped) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.rt.RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &cappedBody{rc: resp.Body, left: c.max, max: c.max}
+	return resp, nil
+}
+
+type cappedBody struct {
+	rc        io.ReadCloser
+	left, max int64
+}
+
+func (b *cappedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		// One byte more tells a body of exactly max bytes from a longer one.
+		var one [1]byte
+		if n, _ := b.rc.Read(one[:]); n > 0 {
+			return 0, fmt.Errorf("response larger than %d bytes", b.max)
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.rc.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
+func (b *cappedBody) Close() error { return b.rc.Close() }

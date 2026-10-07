@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/getitdone-gmbh/agentd/internal/testutil"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/getitdone-gmbh/agentd/internal/agent"
 	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agentd/internal/llm"
 	"github.com/getitdone-gmbh/agentd/internal/store"
 )
 
@@ -244,7 +246,7 @@ func TestExternalAuthOIDC(t *testing.T) {
 	m, st := newManager(t, "  external_auth:\n    enabled: true\n    userinfo_url: "+idp.URL+"\n    plan_field: org.plan\n    plan_map: {pro: default}\n")
 	ctx := context.Background()
 	id, err := m.Authenticate(ctx, "good")
-	if err != nil || id != "ext-8f14e45fceea467a9575" {
+	if err != nil || id != "ext-8f14e45f-ceea-467a-9575" {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
 	tn, _ := st.GetTenant(ctx, id)
@@ -260,5 +262,115 @@ func TestExternalAuthOIDC(t *testing.T) {
 	}
 	if _, err := m.Authenticate(ctx, "bad"); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("bad token: %v", err)
+	}
+}
+
+func TestExternalIDsNeverCollide(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sub := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		io.WriteString(w, `{"email":"`+sub+`"}`)
+	}))
+	defer idp.Close()
+	m, _ := newManager(t, "  external_auth:\n    enabled: true\n    userinfo_url: "+idp.URL+"\n    id_field: email\n")
+	ctx := context.Background()
+	a, err1 := m.Authenticate(ctx, "John.Doe@x.com")
+	b, err2 := m.Authenticate(ctx, "johndoe@x.com")
+	if err1 != nil || err2 != nil || a == b {
+		t.Fatalf("a=%q b=%q err=%v %v", a, b, err1, err2)
+	}
+}
+
+func TestNegativeUsageIgnored(t *testing.T) {
+	m, _ := newManager(t, "")
+	ctx := context.Background()
+	m.recordUsage("t1", llm.Usage{InputTokens: 100, OutputTokens: 10})
+	m.recordUsage("t1", llm.Usage{InputTokens: -1_000_000, OutputTokens: -5})
+	u, err := m.Usage(ctx, "t1")
+	if err != nil || u.InputTokens != 100 || u.OutputTokens != 10 {
+		t.Fatalf("usage %+v err=%v", u, err)
+	}
+}
+
+// A tenant over its own concurrency cap must wait on its own slot, not on a
+// process-wide one: before, five parallel runs of a one-slot tenant parked on
+// five of the shared slots and a handful of tenants starved everyone else.
+func TestTenantCapBeforeGlobalSlot(t *testing.T) {
+	var inflight sync.WaitGroup
+	block := make(chan struct{})
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inflight.Done()
+		<-block
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer llmSrv.Close()
+	cfg, err := config.Parse([]byte(`
+server:
+  max_concurrent_runs: 4
+tenancy:
+  enabled: true
+  allow_networks: [127.0.0.1/32]
+  plans:
+    default: {max_agents: 5, runs_per_minute: 100, max_concurrent_runs: 1}
+  default_plan: default
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.NewMem("", time.Hour, 100)
+	m, err := New(context.Background(), cfg, st, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := m.CreateTenant(ctx, store.Tenant{ID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply(ctx, "t1", Mutation{Put: []store.Resource{
+		res(store.KindProvider, "p", `{"type":"openai-compatible","base_url":"`+llmSrv.URL+`","max_retries":0}`),
+		res(store.KindAgent, "a", `{"provider":"p"}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	inflight.Add(1) // only one run may reach the model at a time
+	var done sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			if _, err := m.Run(ctx, "t1", "a", agent.RunInput{Input: "x"}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	inflight.Wait()
+	time.Sleep(50 * time.Millisecond) // let the other four queue up
+	if n := m.Stats()["global_running"]; n != 1 {
+		t.Errorf("shared slots held by one tenant: %v, want 1", n)
+	}
+	inflight.Add(4)
+	close(block)
+	done.Wait()
+}
+
+// Webhooks need no login and tenant ids are predictable: calls are counted
+// per tenant and in total before any configuration is loaded.
+func TestAllowHook(t *testing.T) {
+	m, _ := newManager(t, "")
+	n := 0
+	for m.AllowHook("victim") {
+		n++
+	}
+	if n != HooksPerTenantMinute {
+		t.Errorf("one tenant got %d hook calls, want %d", n, HooksPerTenantMinute)
+	}
+	if !m.AllowHook("other") {
+		t.Error("another tenant is limited by the first one's bucket")
+	}
+	rotating := 0
+	for m.AllowHook(fmt.Sprintf("t%d", rotating)) {
+		rotating++
+	}
+	if rotating >= HooksPerMinute {
+		t.Errorf("rotating tenant ids got %d more calls, global cap is %d per minute", rotating, HooksPerMinute)
 	}
 }

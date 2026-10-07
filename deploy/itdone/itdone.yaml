@@ -1,20 +1,33 @@
-# Deploy manifest for ITDone Cloud (https://itdone.cloud). Copy it to the
-# repository root of your fork to deploy with ITDone. Secrets:
-#   AGENT_RUNTIME_TOKEN, RUNTIME_SECRET_KEY (openssl rand -base64 32),
-#   LLM_API_KEY (optional shared provider)
-# To let ITDone users log in with their ITDone token, also set:
-#   EXTERNAL_AUTH_ENABLED=true
-#   EXTERNAL_AUTH_USERINFO_URL=https://api.itdone.cloud/me
-#   EXTERNAL_AUTH_ID_FIELD=id  EXTERNAL_AUTH_PLAN_FIELD=tier  EXTERNAL_AUTH_TENANT_PREFIX=itd-
+# Example: agentd as a customer app on ITDone Cloud (copy to your repo root).
+# ITDone itself runs agentd via ArgoCD instead (itdone-cloud: infra/k8s/envs/
+# itdone-cloud/itdone-agentd). The platform
+# builds this repo with Cloud Native Buildpacks and runs two replicas behind
+# one URL. Tenants are ITDone users (their dashboard token is checked against
+# api.itdone.cloud/me); agents are rows in the attached Postgres, not pods.
+#
+# Secrets (set in the dashboard or with itdone_set_secrets):
+#   AGENT_RUNTIME_TOKEN  admin token (openssl rand -hex 32)
+#   RUNTIME_SECRET_KEY   encrypts tenant secrets (openssl rand -base64 32)
+#   LLM_API_KEY          Mistral API key for the shared model
 version: "1"
 services:
   agents:
     path: .
     port: 8080
     public: true
+    replicas: 2
     env:
       TENANCY_ENABLED: "true"
+      AGENT_REPLICAS: "2"
       LLM_PROVIDER: mistral
+      LLM_MODEL: mistral-medium-latest
+      TENANT_SHARED_LLM: "true"
+      EXTERNAL_AUTH_ENABLED: "true"
+      EXTERNAL_AUTH_USERINFO_URL: https://api.itdone.cloud/me
+      EXTERNAL_AUTH_ID_FIELD: id
+      EXTERNAL_AUTH_PLAN_FIELD: tier
+      EXTERNAL_AUTH_TENANT_PREFIX: itd-
+      CORS_ORIGINS: https://dashboard.itdone.cloud,https://itdone.cloud,https://www.itdone.cloud
       GOMEMLIMIT: 200MiB
 
 addons:

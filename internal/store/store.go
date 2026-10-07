@@ -97,6 +97,9 @@ type Store interface {
 	// namespaced by the caller).
 	Sessions() agent.Store
 
+	// Files: per-tenant file storage (removed with the tenant).
+	FileStore
+
 	// Leader reports whether this replica should run schedulers. Backends
 	// without coordination always return true.
 	Leader(ctx context.Context) bool

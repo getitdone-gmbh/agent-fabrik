@@ -1,0 +1,95 @@
+name: image
+
+# Same path as itdone-chat: test, build the image, push it to GHCR and pin
+# the digest into the ArgoCD-managed manifest in itdone-cloud. The rollout
+# happens through Git (infra/k8s/envs/itdone-cloud/itdone-agentd/).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only the newest commit may build+pin: parallel runs finishing out of order
+# would let an old build pin its digest over a newer one.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Lint
+        run: make lint
+      - name: Test (race, real Postgres)
+        env:
+          AR_TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+        run: make race
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/agentd
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: VERSION=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Needs GITOPS_TOKEN: a fine-grained PAT limited to itdone-cloud with
+      # Contents: Read and write (same secret as in itdone-chat).
+      - name: Checkout GitOps repo
+        if: github.ref == 'refs/heads/main'
+        uses: actions/checkout@v6
+        with:
+          repository: getitdone-gmbh/itdone-cloud
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Pin digest for ArgoCD
+        if: github.ref == 'refs/heads/main'
+        uses: ./gitops/.github/actions/pin-digest
+        with:
+          working-directory: gitops
+          manifest: infra/k8s/envs/itdone-cloud/itdone-agentd/deployment.yaml
+          image: ghcr.io/getitdone-gmbh/agentd
+          digest: ${{ steps.build.outputs.digest }}

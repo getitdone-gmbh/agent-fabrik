@@ -29,6 +29,10 @@ type TenancyConfig struct {
 	MaxCachedRuntimes int    `yaml:"max_cached_runtimes"`
 	SchedulerWorkers  int    `yaml:"scheduler_workers"`
 	SessionTTL        string `yaml:"session_ttl"`
+	// Replicas is the number of runtime replicas. Rate and concurrency
+	// limits are counted per process, so each replica enforces its share
+	// (limit / replicas, rounded up) and the tenant gets the plan's total.
+	Replicas int `yaml:"replicas"`
 	// AllowNetworks lets tenant connections reach these internal CIDRs.
 	AllowNetworks []string `yaml:"allow_networks"`
 }
@@ -91,7 +95,47 @@ type Limits struct {
 	MinPollInterval     string   `yaml:"min_poll_interval" json:"min_poll_interval"`
 	SharedProviders     *bool    `yaml:"shared_providers" json:"shared_providers,omitempty"`
 	ConnectorTypes      []string `yaml:"connector_types" json:"connector_types,omitempty"`
+	// File storage (files.* tools, /v1/files). 0 = default, -1 = unlimited.
+	MaxFiles     int `yaml:"max_files" json:"max_files"`
+	MaxFileMB    int `yaml:"max_file_mb" json:"max_file_mb"`
+	MaxStorageMB int `yaml:"max_storage_mb" json:"max_storage_mb"`
 }
+
+// Defaults for file storage when a plan does not set them.
+const (
+	DefaultMaxFiles     = 500
+	DefaultMaxFileMB    = 5
+	DefaultMaxStorageMB = 50
+)
+
+// FileLimits returns the file quota in files and bytes (0 = unlimited).
+func (l Limits) FileLimits() (files, fileBytes, totalBytes int64) {
+	pick := func(v, def int) int64 {
+		switch {
+		case v < 0:
+			return 0
+		case v == 0:
+			return int64(def)
+		}
+		return int64(v)
+	}
+	return pick(l.MaxFiles, DefaultMaxFiles), pick(l.MaxFileMB, DefaultMaxFileMB) << 20, pick(l.MaxStorageMB, DefaultMaxStorageMB) << 20
+}
+
+// Hard caps for per-agent settings in tenant documents.
+const (
+	TenantMaxRunSeconds    = 300
+	TenantMaxToolSeconds   = 60
+	TenantMaxToolOutput    = 50_000
+	TenantMaxParallelTools = 4
+	TenantMaxHistory       = 100
+	TenantMaxTokens        = 8192
+	// Memory: tenants share one process and its limit, so what one poll or
+	// tool call may hold in RAM is capped (see also netguard.TenantTransport).
+	TenantMaxPerPoll      = 5
+	TenantMaxMailBytes    = 5 << 20
+	TenantMaxHTTPResponse = 1 << 20
+)
 
 // DefaultLimits are conservative limits used when no plan matches.
 func DefaultLimits() Limits {
@@ -100,6 +144,15 @@ func DefaultLimits() Limits {
 		MaxConcurrentRuns: 2, RunsPerMinute: 30, MonthlyTokens: 1_000_000, MaxSteps: 12,
 		MinScheduleInterval: "5m", MinPollInterval: "2m",
 	}
+}
+
+// PerReplica splits a per-process limit across n replicas (0 stays
+// unlimited, and every replica keeps at least 1).
+func PerReplica(limit, replicas int) int {
+	if limit <= 0 || replicas <= 1 {
+		return limit
+	}
+	return (limit + replicas - 1) / replicas
 }
 
 // AllowsShared reports whether shared providers may be used.
@@ -136,12 +189,18 @@ func (l Limits) check(c *Config) []string {
 		allowedTypes[strings.ToLower(t)] = true
 	}
 	for name, cc := range c.Connectors {
+		if cc.Type == "shell" {
+			// Never on a plan: tenants share one process.
+			errs = append(errs, fmt.Sprintf("connector %q: type shell is not allowed in multi-tenant mode", name))
+			continue
+		}
 		if len(allowedTypes) > 0 && !allowedTypes[cc.Type] {
 			errs = append(errs, fmt.Sprintf("connector %q: type %q is not allowed on your plan", name, cc.Type))
 		}
 		var pol struct {
-			Command      []string `yaml:"command"`
-			AllowPrivate bool     `yaml:"allow_private"`
+			Command          []string `yaml:"command"`
+			AllowPrivate     bool     `yaml:"allow_private"`
+			MaxResponseBytes int      `yaml:"max_response_bytes"`
 		}
 		_ = cc.Decode(&pol)
 		if len(pol.Command) > 0 {
@@ -150,11 +209,31 @@ func (l Limits) check(c *Config) []string {
 		if pol.AllowPrivate {
 			errs = append(errs, fmt.Sprintf("connector %q: allow_private is not allowed", name))
 		}
+		if pol.MaxResponseBytes > TenantMaxHTTPResponse {
+			errs = append(errs, fmt.Sprintf("connector %q: max_response_bytes %d exceeds limit %d", name, pol.MaxResponseBytes, TenantMaxHTTPResponse))
+		}
 	}
 	minSched, minPoll := l.MinSchedule(), l.MinPoll()
 	for name, a := range c.Agents {
 		if l.MaxSteps > 0 && a.MaxSteps > l.MaxSteps {
 			errs = append(errs, fmt.Sprintf("agent %q: max_steps %d exceeds limit %d", name, a.MaxSteps, l.MaxSteps))
+		}
+		// Tenants share one process: settings that hold a run slot or
+		// memory for longer are capped so one tenant cannot starve the rest.
+		for _, c := range []struct {
+			field  string
+			n, max int
+		}{
+			{"run_timeout_seconds", a.RunTimeoutSec, TenantMaxRunSeconds},
+			{"tool_timeout_seconds", a.ToolTimeoutSec, TenantMaxToolSeconds},
+			{"max_tool_output", a.MaxToolOutput, TenantMaxToolOutput},
+			{"parallel_tools", a.ParallelTools, TenantMaxParallelTools},
+			{"history_limit", a.HistoryLimit, TenantMaxHistory},
+			{"max_tokens", a.MaxTokens, TenantMaxTokens},
+		} {
+			if c.n > c.max {
+				errs = append(errs, fmt.Sprintf("agent %q: %s %d exceeds limit %d", name, c.field, c.n, c.max))
+			}
 		}
 		for i, t := range a.Triggers {
 			triggers++
@@ -174,6 +253,9 @@ func (l Limits) check(c *Config) []string {
 				d := dur(t.Every, time.Minute)
 				if minPoll > 0 && d < minPoll {
 					errs = append(errs, fmt.Sprintf("%s: poll interval %v below minimum %v", where, d, minPoll))
+				}
+				if t.MaxPerPoll > TenantMaxPerPoll {
+					errs = append(errs, fmt.Sprintf("%s: max_per_poll %d exceeds limit %d", where, t.MaxPerPoll, TenantMaxPerPoll))
 				}
 			case "webhook":
 				if t.Secret == "" {
@@ -199,10 +281,16 @@ func (t TenancyConfig) validate(providers map[string]llm.Config) []string {
 		}
 	case "postgres":
 		if t.Store.URL == "" {
-			errs = append(errs, "tenancy.store.url is required for type postgres")
+			errs = append(errs, "tenancy.store.url is required for type postgres (built-in config: DATABASE_URL)")
 		}
 	default:
 		errs = append(errs, "tenancy.store.type must be memory, file or postgres")
+	}
+	if (t.Store.Type == "postgres" || t.Store.Type == "file") && t.SecretKey == "" {
+		// Checked here, before any connection, so a missing key is the one
+		// clear error at startup instead of a crash after connecting.
+		errs = append(errs, "tenancy.secret_key is required with a persistent store: it encrypts tenant secrets "+
+			"(built-in config: RUNTIME_SECRET_KEY, create with: openssl rand -base64 32, keep it safe)")
 	}
 	if a := t.ExternalAuth; a.Enabled {
 		if !strings.HasPrefix(a.UserinfoURL, "https://") && !strings.HasPrefix(a.UserinfoURL, "http://") {

@@ -1,0 +1,25 @@
+# Multi-tenant on your laptop: no Docker, no Postgres. Everything lives in
+# memory and is gone after a restart; for a persistent store use the
+# docker-compose setup (Postgres) or tenancy.store.type: file.
+#
+#   export MISTRAL_API_KEY=...   AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24)
+#   ./bin/agentd -config examples/local.yaml
+server:
+  addr: ":${PORT:-8080}"
+  auth_token: ${AGENT_RUNTIME_TOKEN:?set AGENT_RUNTIME_TOKEN (admin token)}
+
+providers:
+  # Shared model: tenants may use it without an own key (see plans below).
+  mistral:
+    type: mistral
+    api_key: ${MISTRAL_API_KEY:?set MISTRAL_API_KEY}
+    model: mistral-small-latest
+
+tenancy:
+  enabled: true
+  store: {type: memory}
+  shared_providers: [mistral]
+  default_plan: free
+  plans:
+    free: {max_agents: 3, runs_per_minute: 10, monthly_tokens: 200000, max_steps: 8}
+    pro: {max_agents: 50, runs_per_minute: 60, monthly_tokens: 5000000, max_steps: 20}

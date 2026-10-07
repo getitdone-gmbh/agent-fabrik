@@ -2,10 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"runtime"
 	"sort"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,6 +30,7 @@ import (
 //   PUT    /v1/secrets/{name}             {"value": "..."}
 //   DELETE /v1/secrets/{name}
 //   GET    /v1/keys, POST /v1/keys {"name"}, DELETE /v1/keys/{id}
+//   GET    /v1/files[?prefix=], GET/PUT/DELETE /v1/files/{path}   (raw bytes)
 //   admin: /v1/admin/tenants[/{id}[/keys]], /v1/admin/stats
 
 var kindPaths = map[string]string{"providers": store.KindProvider, "connectors": store.KindConnector, "agents": store.KindAgent}
@@ -43,6 +48,10 @@ func (s *Server) tenantRoutes(mux *http.ServeMux, h func(string, http.HandlerFun
 	h("GET /v1/keys", s.listKeys)
 	h("POST /v1/keys", s.createKey)
 	h("DELETE /v1/keys/{id}", s.deleteKey)
+	h("GET /v1/files", s.listFiles)
+	h("GET /v1/files/{path...}", s.getFile)
+	h("PUT /v1/files/{path...}", s.putFile)
+	h("DELETE /v1/files/{path...}", s.deleteFile)
 
 	a := func(pattern string, fn http.HandlerFunc) { h(pattern, s.adminOnly(fn)) }
 	a("GET /v1/admin/tenants", s.adminListTenants)
@@ -91,12 +100,19 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	out := map[string]any{"tenant": t, "limits": s.m.Limits(t), "admin": isAdmin(r)}
+	out := map[string]any{"tenant": t, "limits": s.m.Limits(t), "admin": isAdmin(r), "shared_providers": s.m.SharedProviders(t)}
 	if id != tenant.System {
 		if u, err := s.m.Usage(r.Context(), id); err == nil {
 			out["usage"] = u
 		}
 		out["webhook_path"] = "/v1/tenants/" + id + "/hooks/{agent}/{name}"
+		if f, err := s.m.Files(r.Context(), id); err == nil {
+			if u, err := f.Usage(r.Context()); err == nil {
+				q := f.Quota()
+				out["files"] = map[string]int64{"files": u.Files, "bytes": u.Bytes,
+					"max_files": q.MaxFiles, "max_file_bytes": q.MaxFileBytes, "max_total_bytes": q.MaxTotalBytes}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -437,6 +453,114 @@ func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
 		st["tenants"] = len(ts)
 	}
 	st["version"] = Version
-	st["leader"] = s.m.Store().Leader(r.Context())
+	st["leader"] = s.m.IsLeader()
 	writeJSON(w, http.StatusOK, st)
+}
+
+// ---------- files ----------
+
+func (s *Server) tenantFiles(w http.ResponseWriter, r *http.Request) (*tenant.Files, bool) {
+	id := tenantOf(r)
+	if id == tenant.System {
+		writeError(w, http.StatusBadRequest, "files belong to a tenant; use a tenant key (or the admin token with X-Tenant)")
+		return nil, false
+	}
+	f, err := s.m.Files(r.Context(), id)
+	if err != nil {
+		fail(w, err)
+		return nil, false
+	}
+	return f, true
+}
+
+func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.tenantFiles(w, r)
+	if !ok {
+		return
+	}
+	list, err := f.ListFiles(r.Context(), r.URL.Query().Get("prefix"), 1000)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	u, err := f.Usage(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	q := f.Quota()
+	writeJSON(w, http.StatusOK, map[string]any{"files": list, "usage": u,
+		"quota": map[string]int64{"max_files": q.MaxFiles, "max_file_bytes": q.MaxFileBytes, "max_total_bytes": q.MaxTotalBytes}})
+}
+
+func (s *Server) getFile(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.tenantFiles(w, r)
+	if !ok {
+		return
+	}
+	release, err := f.Hold(r.Context())
+	if err != nil {
+		return
+	}
+	defer release()
+	info, data, err := f.Get(r.Context(), r.PathValue("path"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", info.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	// Never render tenant content as a page on the API origin.
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(path.Base(info.Path)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Last-Modified", info.UpdatedAt.UTC().Format(http.TimeFormat))
+	_, _ = w.Write(data)
+}
+
+func (s *Server) putFile(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.tenantFiles(w, r)
+	if !ok {
+		return
+	}
+	limit := f.Quota().MaxFileBytes
+	if limit <= 0 {
+		limit = 1 << 30
+	}
+	if r.ContentLength > limit {
+		// Refused before waiting for a slot or reading a byte.
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large: limit is %d bytes per file", limit))
+		return
+	}
+	release, err := f.Hold(r.Context())
+	if err != nil {
+		return
+	}
+	defer release()
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large: limit is %d bytes per file", limit))
+		return
+	}
+	ct := r.Header.Get("Content-Type")
+	if ct == "application/x-www-form-urlencoded" { // curl's default for --data-binary
+		ct = ""
+	}
+	info, err := f.Put(r.Context(), r.PathValue("path"), data, ct)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.tenantFiles(w, r)
+	if !ok {
+		return
+	}
+	if err := f.Remove(r.Context(), r.PathValue("path")); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -26,6 +26,9 @@ type IMAPConfig struct {
 	TLS                string `yaml:"tls"` // implicit (default), starttls, none
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 	Mailbox            string `yaml:"mailbox"` // default INBOX
+	// MaxMessageBytes caps what one command may read from the server, the
+	// sum of all its literals (default 50 MB). Tenants get a smaller cap.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
 
 	// Dial overrides the TCP dialer (e.g. SSRF-guarded for tenants).
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error) `yaml:"-"`
@@ -49,6 +52,8 @@ type IMAPClient struct {
 	r    *bufio.Reader
 	w    *bufio.Writer
 	tag  int
+	// limit is the byte budget of one command, left what remains of it.
+	limit, left int64
 }
 
 // response is one server response with literals extracted.
@@ -75,7 +80,11 @@ func DialIMAP(ctx context.Context, cfg IMAPConfig) (*IMAPClient, error) {
 	if mode == "" || mode == "implicit" {
 		conn = tls.Client(conn, tlsCfg)
 	}
-	c := &IMAPClient{conn: conn, r: bufio.NewReader(conn), w: bufio.NewWriter(conn)}
+	limit := int64(cfg.MaxMessageBytes)
+	if limit <= 0 {
+		limit = maxLiteral
+	}
+	c := &IMAPClient{conn: conn, r: bufio.NewReader(conn), w: bufio.NewWriter(conn), limit: limit, left: limit}
 	c.deadline()
 	greeting, err := c.readLine()
 	if err != nil {
@@ -109,12 +118,26 @@ type istr string
 
 func (c *IMAPClient) deadline() { _ = c.conn.SetDeadline(time.Now().Add(imapTimeout)) }
 
+// maxLine caps one response line; ReadString alone would buffer a line
+// without end until the process runs out of memory.
+const maxLine = 1 << 20
+
 func (c *IMAPClient) readLine() (string, error) {
-	line, err := c.r.ReadString('\n')
-	if err != nil {
-		return "", err
+	var line []byte
+	for {
+		chunk, err := c.r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > maxLine {
+			return "", fmt.Errorf("imap line longer than %d bytes", maxLine)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(string(line), "\r\n"), nil
 	}
-	return strings.TrimRight(line, "\r\n"), nil
 }
 
 var literalRe = regexp.MustCompile(`\{(\d+)\+?\}$`)
@@ -135,9 +158,10 @@ func (c *IMAPClient) readResponse() (response, error) {
 			break
 		}
 		n, _ := strconv.Atoi(m[1])
-		if n > maxLiteral {
-			return resp, fmt.Errorf("imap literal too large (%d bytes)", n)
+		if int64(n) > c.left {
+			return resp, fmt.Errorf("imap response larger than %d bytes", c.limit)
 		}
+		c.left -= int64(n)
 		buf := make([]byte, n)
 		if _, err := io.ReadFull(c.r, buf); err != nil {
 			return resp, err
@@ -167,6 +191,7 @@ func (c *IMAPClient) exec(parts ...any) ([]response, error) {
 	c.tag++
 	tag := fmt.Sprintf("A%04d", c.tag)
 	c.deadline()
+	c.left = c.limit
 	var untagged []response
 	c.w.WriteString(tag + " ")
 	for _, p := range parts {
@@ -356,6 +381,32 @@ func (c *IMAPClient) FetchSummaries(uids []uint32) ([]Summary, error) {
 	}
 	return out, nil
 }
+
+// fetchSlots bounds how many full messages are held and decoded at once
+// per process. A raw message and its decoded parts are the largest buffers
+// agentd holds, and every tenant's triggers and tools may fetch in parallel.
+var fetchSlots = make(chan struct{}, 4)
+
+// FetchEmail fetches and parses one message without setting \Seen. A
+// message the server returned but that does not parse is reported as
+// ErrUnparseable, so callers can skip it instead of failing the batch.
+func (c *IMAPClient) FetchEmail(uid uint32) (*Email, error) {
+	fetchSlots <- struct{}{}
+	defer func() { <-fetchSlots }()
+	raw, err := c.FetchRaw(uid)
+	if err != nil {
+		return nil, err
+	}
+	e, err := ParseEmail(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnparseable, err)
+	}
+	e.UID = uid
+	return e, nil
+}
+
+// ErrUnparseable marks a fetched message that is not valid RFC 822.
+var ErrUnparseable = errors.New("unparseable email")
 
 // FetchRaw returns the full RFC 822 message without setting \Seen.
 func (c *IMAPClient) FetchRaw(uid uint32) ([]byte, error) {

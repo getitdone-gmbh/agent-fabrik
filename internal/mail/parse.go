@@ -81,6 +81,9 @@ func parseHeaderBlock(b []byte) map[string]string {
 	return out
 }
 
+// maxText caps the decoded body text kept per message.
+const maxText = 256 << 10
+
 // ParseEmail parses a raw RFC 822 message and extracts readable text.
 func ParseEmail(raw []byte) (*Email, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
@@ -109,6 +112,11 @@ func ParseEmail(raw []byte) (*Email, error) {
 		e.Text = htmlToText(htmlText)
 	}
 	e.Text = strings.TrimSpace(e.Text)
+	if len(e.Text) > maxText {
+		// Batches of parsed mail wait in memory while their runs go; no
+		// model reads megabytes of body text anyway.
+		e.Text = e.Text[:maxText] + "\n…(truncated)"
+	}
 	return e, nil
 }
 

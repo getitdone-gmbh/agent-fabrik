@@ -51,7 +51,18 @@ func fakeLLM(t *testing.T) *httptest.Server {
 				echo = tl.Function.Name
 			}
 		}
+		reader := ""
+		for _, tl := range req.Tools {
+			if tl.Function.Name == "files__read" {
+				reader = tl.Function.Name
+			}
+		}
 		switch {
+		case last.Role == "user" && reader != "" && strings.HasPrefix(last.Content, "READ "):
+			args, _ := json.Marshal(map[string]string{"path": strings.TrimPrefix(last.Content, "READ ")})
+			msg["content"] = nil
+			msg["tool_calls"] = []map[string]any{{"id": "call_1", "type": "function", "function": map[string]any{"name": reader, "arguments": string(args)}}}
+			finish = "tool_calls"
 		case last.Role == "user" && echo != "":
 			first, _, _ := strings.Cut(last.Content, "\n")
 			args, _ := json.Marshal(map[string]string{"text": first})

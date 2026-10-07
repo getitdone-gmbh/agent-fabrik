@@ -2,3 +2,4 @@
 *.test
 /sessions/
 .DS_Store
+/dist/

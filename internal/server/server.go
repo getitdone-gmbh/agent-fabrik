@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -99,13 +100,25 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 func (s *Server) limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		metrics.HTTPRequests.Add(1)
-		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes)
+		// File uploads are capped by the tenant's per-file quota instead
+		// (putFile), which may be larger than the API body limit.
+		if !(r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/files/")) {
+			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
-	origins := s.cfg.Server.CORSOrigins
+	// Entries may hold comma-separated lists (one env var for all origins).
+	var origins []string
+	for _, o := range s.cfg.Server.CORSOrigins {
+		for _, part := range strings.Split(o, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				origins = append(origins, part)
+			}
+		}
+	}
 	if len(origins) == 0 {
 		return next
 	}
@@ -167,6 +180,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		id, admin, err := s.resolve(r)
 		if err != nil {
 			if !errors.Is(err, tenant.ErrUnauthorized) {
+				slog.Warn("authentication failed", "path", r.URL.Path, "err", err)
 				writeError(w, http.StatusServiceUnavailable, "authentication backend unavailable")
 				return
 			}
@@ -197,6 +211,8 @@ func fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &ve):
 		writeError(w, http.StatusUnprocessableEntity, ve.Msg)
+	case errors.Is(err, store.ErrFileQuota):
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, store.ErrExists):
@@ -434,7 +450,10 @@ func (s *Server) verifyHook(t config.Trigger, r *http.Request, body []byte, syst
 		return hmac.Equal([]byte(sig), []byte(want))
 	}
 	got := r.Header.Get("X-Webhook-Secret")
-	if got == "" {
+	if got == "" && system {
+		// Only the operator's own hooks: a secret in the URL ends up in
+		// proxy and ingress logs, which on a shared platform are not the
+		// tenant's.
 		got = r.URL.Query().Get("secret")
 	}
 	return subtle.ConstantTimeCompare([]byte(got), secret) == 1 || adminOK
@@ -446,6 +465,10 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		tenantID = tenant.System
 	}
 	name := r.PathValue("name")
+	if tenantID != tenant.System && !s.m.AllowHook(tenantID) {
+		writeError(w, http.StatusTooManyRequests, "too many webhook calls, try again later")
+		return
+	}
 	t, ok := s.findHook(r.Context(), tenantID, name, r.PathValue("hook"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "webhook not found")
@@ -478,6 +501,11 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	metrics.TriggerRuns.Add(1)
 	if t.Async {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("async webhook run panicked", "tenant", tenantID, "agent", name, "panic", r)
+				}
+			}()
 			if _, err := s.m.Run(s.bg, tenantID, name, in); err != nil {
 				_ = err // logged by the agent / manager
 			}

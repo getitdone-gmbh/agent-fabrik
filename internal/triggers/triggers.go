@@ -4,6 +4,7 @@ package triggers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -77,7 +78,7 @@ func (p *poller) poll(ctx context.Context, env Env) error {
 	}
 	max := p.t.MaxPerPoll
 	if max <= 0 {
-		max = 10
+		max = 5 // the tenant cap (config.TenantMaxPerPoll); operators may set more
 	}
 	var batch []inbound
 	var skip []uint32
@@ -92,17 +93,15 @@ func (p *poller) poll(ctx context.Context, env Env) error {
 			uids = uids[:max]
 		}
 		for _, uid := range uids {
-			raw, err := c.FetchRaw(uid)
-			if err != nil {
-				return err
-			}
-			e, err := imail.ParseEmail(raw)
-			if err != nil {
+			e, err := c.FetchEmail(uid)
+			if errors.Is(err, imail.ErrUnparseable) {
 				p.log.Warn("unparseable email, skipping", "uid", uid, "err", err)
 				skip = append(skip, uid)
 				continue
 			}
-			e.UID = uid
+			if err != nil {
+				return err
+			}
 			if e.IsAutomated() || !p.senderAllowed(e.From) {
 				p.log.Info("ignoring email", "uid", uid, "from", e.From, "automated", e.IsAutomated())
 				skip = append(skip, uid)
@@ -122,6 +121,12 @@ func (p *poller) poll(ctx context.Context, env Env) error {
 			break
 		}
 		if err := p.handle(ctx, env, conn, in.email, reply); err != nil {
+			if errors.Is(err, agent.ErrThrottled) {
+				// Throttling is not the message's fault: leave it (and the
+				// rest of the batch) unread for a later poll.
+				p.log.Warn("tenant throttled, leaving emails unread", "err", err)
+				break
+			}
 			p.attempts[in.uid]++
 			p.log.Error("handling email failed", "uid", in.uid, "attempt", p.attempts[in.uid], "err", err)
 			if p.attempts[in.uid] < maxAttempts {

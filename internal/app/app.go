@@ -48,6 +48,8 @@ type Options struct {
 	ConnectorsOptional bool
 	// MaxSteps caps every agent's max_steps (0 = no cap).
 	MaxSteps int
+	// Files, when set, adds the built-in "files" connector (tenant storage).
+	Files tools.FilesBackend
 }
 
 // Build constructs the app from config.
@@ -79,7 +81,7 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 	}
 	for name, pc := range cfg.Providers {
 		if opts.Guarded {
-			pc.Transport = netguard.Transport
+			pc.Transport = netguard.TenantTransport
 		}
 		p, err := llm.New(name, pc)
 		if err != nil {
@@ -91,6 +93,11 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 	if err := a.Registry.Add(ctx, tools.NewBuiltin("system")); err != nil {
 		return nil, err
 	}
+	if opts.Files != nil {
+		if err := a.Registry.Add(ctx, tools.NewFiles("files", opts.Files)); err != nil {
+			return nil, err
+		}
+	}
 	names := make([]string, 0, len(cfg.Connectors))
 	for n := range cfg.Connectors {
 		names = append(names, n)
@@ -100,6 +107,18 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 		cc := cfg.Connectors[name]
 		var common connectorCommon
 		_ = cc.Decode(&common)
+		if common.Optional && cc.Type == "mcp" {
+			// An optional MCP connector without url/command is simply not
+			// configured (e.g. MCP_URL unset): skip it quietly, it is no fault.
+			var target struct {
+				URL     string   `yaml:"url"`
+				Command []string `yaml:"command"`
+			}
+			if _ = cc.Decode(&target); target.URL == "" && len(target.Command) == 0 {
+				log.Debug("optional connector not configured, skipped", "connector", name)
+				continue
+			}
+		}
 		conn, err := newConnector(name, cc, log, opts.Guarded)
 		if err == nil {
 			cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -176,7 +195,7 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 			return nil, err
 		}
 		if guarded {
-			c.Transport, c.DenyCommands = netguard.Transport, true
+			c.Transport, c.DenyCommands = netguard.TenantTransport, true
 		}
 		return tools.NewMCPConnector(name, c, log)
 	case "http":
@@ -185,7 +204,7 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 			return nil, err
 		}
 		if guarded {
-			c.Transport = netguard.Transport
+			c.Transport = netguard.TenantTransport
 		}
 		return tools.NewHTTPConnector(name, c)
 	case "email":
@@ -198,6 +217,9 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 		}
 		if c.IMAP != nil {
 			c.IMAP.Dial = dial
+			if guarded {
+				c.IMAP.MaxMessageBytes = config.TenantMaxMailBytes
+			}
 		}
 		return tools.NewEmailConnector(name, c)
 	case "smtp":
@@ -219,13 +241,34 @@ func newConnector(name string, cc config.Connector, log *slog.Logger, guarded bo
 			return nil, err
 		}
 		c.IMAPConfig.Dial = dial
+		if guarded {
+			c.IMAPConfig.MaxMessageBytes = config.TenantMaxMailBytes
+		}
 		return tools.NewEmailConnector(name, tools.EmailConfig{IMAP: &c.IMAPConfig, ReadOnly: c.ReadOnly})
+	case "shell":
+		if guarded {
+			// Tenants share this process: a shell would reach every tenant's secrets.
+			return nil, fmt.Errorf("connector %q: shell is not available in multi-tenant mode", name)
+		}
+		var c tools.ShellConfig
+		if err := cc.Decode(&c); err != nil {
+			return nil, err
+		}
+		log.Warn("shell connector enabled: agents can run commands on this machine", "connector", name, "workdir", c.Workdir, "allow", c.Allow)
+		return tools.NewShellConnector(name, c)
 	}
-	return nil, fmt.Errorf("connector %q: unknown type %q (mcp, http, email, smtp, imap)", name, cc.Type)
+	return nil, fmt.Errorf("connector %q: unknown type %q (mcp, http, email, smtp, imap, shell)", name, cc.Type)
 }
 
-// Run executes an agent, bounded by the global concurrency limit.
+// Run executes an agent, bounded by the app's concurrency limit.
 func (a *App) Run(ctx context.Context, name string, in agent.RunInput) (*agent.RunResult, error) {
+	return a.RunThen(ctx, name, in, nil)
+}
+
+// RunThen is Run with a gate that is passed only after the app's own slot is
+// held. The tenant manager uses it for the process-wide slots: taking those
+// first let a tenant over its own cap park runs on them and starve everyone.
+func (a *App) RunThen(ctx context.Context, name string, in agent.RunInput, gate func(context.Context) (func(), error)) (*agent.RunResult, error) {
 	ag, ok := a.Agents[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", name)
@@ -236,6 +279,13 @@ func (a *App) Run(ctx context.Context, name string, in agent.RunInput) (*agent.R
 		return nil, ctx.Err()
 	}
 	defer func() { <-a.sem }()
+	if gate != nil {
+		release, err := gate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
 	return ag.Run(ctx, in)
 }
 

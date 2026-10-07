@@ -216,11 +216,8 @@ func (e *EmailConnector) Tools(context.Context) ([]Tool, error) {
 					}
 					var em *imail.Email
 					err := e.WithIMAP(ctx, a.Mailbox, func(c *imail.IMAPClient) error {
-						raw, err := c.FetchRaw(a.UID)
-						if err != nil {
-							return err
-						}
-						em, err = imail.ParseEmail(raw)
+						var err error
+						em, err = c.FetchEmail(a.UID)
 						return err
 					})
 					if err != nil {
