@@ -450,7 +450,10 @@ func (s *Server) verifyHook(t config.Trigger, r *http.Request, body []byte, syst
 		return hmac.Equal([]byte(sig), []byte(want))
 	}
 	got := r.Header.Get("X-Webhook-Secret")
-	if got == "" {
+	if got == "" && system {
+		// Only the operator's own hooks: a secret in the URL ends up in
+		// proxy and ingress logs, which on a shared platform are not the
+		// tenant's.
 		got = r.URL.Query().Get("secret")
 	}
 	return subtle.ConstantTimeCompare([]byte(got), secret) == 1 || adminOK
@@ -462,6 +465,10 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		tenantID = tenant.System
 	}
 	name := r.PathValue("name")
+	if tenantID != tenant.System && !s.m.AllowHook(tenantID) {
+		writeError(w, http.StatusTooManyRequests, "too many webhook calls, try again later")
+		return
+	}
 	t, ok := s.findHook(r.Context(), tenantID, name, r.PathValue("hook"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "webhook not found")

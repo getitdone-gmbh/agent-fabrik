@@ -57,6 +57,21 @@ func (m *Manager) allow(tenant string, perMinute int) bool {
 	return b.take(perMinute)
 }
 
+// Webhook attempts per replica and minute, checked before the hook is even
+// looked up: the endpoint needs no login, tenant ids are predictable, and
+// each lookup loads and decrypts a tenant's whole configuration. The global
+// bucket comes first, so unknown ids cannot grow the limiter map faster
+// than it is swept.
+const (
+	HooksPerMinute       = 600
+	HooksPerTenantMinute = 60
+)
+
+// AllowHook reports whether another webhook call for tenant may be handled.
+func (m *Manager) AllowHook(tenant string) bool {
+	return m.allow("\x00hooks", HooksPerMinute) && m.allow("\x00hook:"+tenant, HooksPerTenantMinute)
+}
+
 // usageCounter caches this month's token usage per tenant. It is loaded
 // from the store once and then updated locally; other replicas' usage is
 // picked up when the cache is refreshed (every minute).

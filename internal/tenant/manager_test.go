@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/getitdone-gmbh/agentd/internal/testutil"
 	"io"
 	"log/slog"
@@ -349,4 +350,27 @@ tenancy:
 	inflight.Add(4)
 	close(block)
 	done.Wait()
+}
+
+// Webhooks need no login and tenant ids are predictable: calls are counted
+// per tenant and in total before any configuration is loaded.
+func TestAllowHook(t *testing.T) {
+	m, _ := newManager(t, "")
+	n := 0
+	for m.AllowHook("victim") {
+		n++
+	}
+	if n != HooksPerTenantMinute {
+		t.Errorf("one tenant got %d hook calls, want %d", n, HooksPerTenantMinute)
+	}
+	if !m.AllowHook("other") {
+		t.Error("another tenant is limited by the first one's bucket")
+	}
+	rotating := 0
+	for m.AllowHook(fmt.Sprintf("t%d", rotating)) {
+		rotating++
+	}
+	if rotating >= HooksPerMinute {
+		t.Errorf("rotating tenant ids got %d more calls, global cap is %d per minute", rotating, HooksPerMinute)
+	}
 }
