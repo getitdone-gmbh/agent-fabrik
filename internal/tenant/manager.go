@@ -734,15 +734,21 @@ func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.
 		return nil, err
 	}
 	defer release()
+	var gate func(context.Context) (func(), error)
 	if tenantID != System {
-		select {
-		case m.global <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		// The tenant's own slot is taken first (inside RunThen), the shared
+		// one only after it: a run waiting on its tenant's cap holds nothing
+		// other tenants need.
+		gate = func(ctx context.Context) (func(), error) {
+			select {
+			case m.global <- struct{}{}:
+				return func() { <-m.global }, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
-		defer func() { <-m.global }()
 	}
-	res, err := a.Run(ctx, agentName, in)
+	res, err := a.RunThen(ctx, agentName, in, gate)
 	if res != nil && tenantID != System {
 		m.recordUsage(tenantID, res.Usage)
 	}
