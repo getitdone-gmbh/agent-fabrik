@@ -54,6 +54,10 @@ type IMAPClient struct {
 	tag  int
 	// limit is the byte budget of one command, left what remains of it.
 	limit, left int64
+	// textLeft is what remains of one command's budget for response lines
+	// (everything but literals), so a server can't stream untagged lines
+	// until the process runs out of memory.
+	textLeft int64
 }
 
 // response is one server response with literals extracted.
@@ -84,7 +88,7 @@ func DialIMAP(ctx context.Context, cfg IMAPConfig) (*IMAPClient, error) {
 	if limit <= 0 {
 		limit = maxLiteral
 	}
-	c := &IMAPClient{conn: conn, r: bufio.NewReader(conn), w: bufio.NewWriter(conn), limit: limit, left: limit}
+	c := &IMAPClient{conn: conn, r: bufio.NewReader(conn), w: bufio.NewWriter(conn), limit: limit, left: limit, textLeft: maxResponseText}
 	c.deadline()
 	greeting, err := c.readLine()
 	if err != nil {
@@ -144,6 +148,9 @@ var literalRe = regexp.MustCompile(`\{(\d+)\+?\}$`)
 
 const maxLiteral = 50 << 20
 
+// maxResponseText caps the response lines of one command outside literals.
+const maxResponseText = 8 << 20
+
 func (c *IMAPClient) readResponse() (response, error) {
 	var resp response
 	var text strings.Builder
@@ -151,6 +158,10 @@ func (c *IMAPClient) readResponse() (response, error) {
 		line, err := c.readLine()
 		if err != nil {
 			return resp, err
+		}
+		c.textLeft -= int64(len(line))
+		if c.textLeft < 0 {
+			return resp, fmt.Errorf("imap response text larger than %d bytes", maxResponseText)
 		}
 		text.WriteString(line)
 		m := literalRe.FindStringSubmatch(line)
@@ -192,6 +203,7 @@ func (c *IMAPClient) exec(parts ...any) ([]response, error) {
 	tag := fmt.Sprintf("A%04d", c.tag)
 	c.deadline()
 	c.left = c.limit
+	c.textLeft = maxResponseText
 	var untagged []response
 	c.w.WriteString(tag + " ")
 	for _, p := range parts {

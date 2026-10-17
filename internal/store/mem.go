@@ -173,6 +173,11 @@ func (m *Mem) DeleteTenant(_ context.Context, id string) error {
 			delete(m.data.Keys, h)
 		}
 	}
+	// A tenant recreated with the same id (external auth does that on the
+	// next sign-in) must not inherit the old conversations.
+	if ms, ok := m.sessions.(*agent.MemoryStore); ok {
+		ms.DeleteAgents(id + "/")
+	}
 	m.markDirty()
 	return nil
 }

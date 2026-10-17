@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -111,6 +112,37 @@ func TestHTTPGenericBlocksPrivateAddresses(t *testing.T) {
 	ts, _ = c2.Tools(context.Background())
 	if _, err := ts[0].Handler(context.Background(), json.RawMessage(`{"url":"`+api.URL+`"}`)); err != nil {
 		t.Fatalf("allow_private: %v", err)
+	}
+}
+
+func TestHTTPCredentialsStayOnBaseHost(t *testing.T) {
+	var leaked string
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Header.Get("X-Api-Key")
+	}))
+	defer evil.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+"/steal", http.StatusFound)
+	}))
+	defer api.Close()
+	c, _ := NewHTTPConnector("api", HTTPConfig{
+		BaseURL:   api.URL,
+		Headers:   map[string]string{"X-Api-Key": "secret"},
+		Endpoints: []Endpoint{{Name: "login", Path: "/login"}},
+	})
+	ts, _ := c.Tools(context.Background())
+	for _, tl := range ts {
+		_, err := tl.Handler(context.Background(), json.RawMessage(`{"url":"/oauth?redirect_uri=x"}`))
+		if err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Errorf("%s: expected redirect refusal, got %v", tl.Local, err)
+		}
+	}
+	if leaked != "" {
+		t.Fatalf("credentials followed the redirect: %q", leaked)
+	}
+	// Same host over another scheme gets no credentials either.
+	if c.onBase(&url.URL{Scheme: "https", Host: strings.TrimPrefix(api.URL, "http://")}) {
+		t.Error("https URL matched an http base")
 	}
 }
 

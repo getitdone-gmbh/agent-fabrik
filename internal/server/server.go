@@ -472,9 +472,11 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many webhook calls, try again later")
 		return
 	}
+	// Unknown hooks and bad secrets answer alike, so hook names can't be
+	// probed without the secret.
 	t, ok := s.findHook(r.Context(), tenantID, name, r.PathValue("hook"))
 	if !ok {
-		writeError(w, http.StatusNotFound, "webhook not found")
+		writeError(w, http.StatusUnauthorized, "unknown webhook or invalid secret")
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -483,7 +485,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.verifyHook(t, r, body, tenantID == tenant.System) {
-		writeError(w, http.StatusUnauthorized, "invalid webhook secret")
+		writeError(w, http.StatusUnauthorized, "unknown webhook or invalid secret")
 		return
 	}
 	payload := string(body)

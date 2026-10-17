@@ -1,10 +1,14 @@
 name: release
 
-# Push a tag v* -> tests, static Linux binaries (amd64, arm64) and a GitHub
+# Push a tag v* -> tests, static Linux and macOS binaries (amd64, arm64) and a GitHub
 # release with SHA256SUMS. Tags with a "-" (v0.2.0-rc.1) become pre-releases.
 on:
   push:
     tags: ["v*"]
+
+# Least privilege by default; jobs that need more ask for it.
+permissions:
+  contents: read
 
 jobs:
   release:

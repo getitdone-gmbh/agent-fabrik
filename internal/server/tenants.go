@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -493,6 +494,10 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 		"quota": map[string]int64{"max_files": q.MaxFiles, "max_file_bytes": q.MaxFileBytes, "max_total_bytes": q.MaxTotalBytes}})
 }
 
+// fileTransferTimeout bounds how long one upload or download may hold a
+// file-transfer slot (25 MB at ~200 KB/s).
+const fileTransferTimeout = 2 * time.Minute
+
 func (s *Server) getFile(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.tenantFiles(w, r)
 	if !ok {
@@ -503,6 +508,9 @@ func (s *Server) getFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	// The slot is shared by all tenants: a client that never reads must not
+	// keep it.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(fileTransferTimeout))
 	info, data, err := f.Get(r.Context(), r.PathValue("path"))
 	if err != nil {
 		fail(w, err)
@@ -536,6 +544,9 @@ func (s *Server) putFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	// The slot is shared by all tenants: a client trickling its body must
+	// not keep it.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(fileTransferTimeout))
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large: limit is %d bytes per file", limit))

@@ -276,8 +276,9 @@ All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>` (or
 - an external token, validated against your userinfo endpoint.
 
 > [!WARNING]
-> If no token is configured and tenancy is off, agentd logs a warning and the
-> API is open. Only do that locally.
+> If no token is configured and tenancy is off, the API is open. agentd then
+> listens on loopback only (`:8080` becomes `127.0.0.1:8080`) and refuses to
+> start on any other address. Set `AGENT_RUNTIME_TOKEN` to serve the network.
 
 | Route | Purpose |
 |---|---|
@@ -356,7 +357,7 @@ agents:
 
 - **Two modes.** Without `allow` the command line runs as `bash -c`, so
   pipes, redirects and scripts work; `deny` then only catches the obvious
-  (`sudo x` is caught, `s""udo x` is not). With `allow` there is no shell:
+  (`*` also matches `/`, so `sudo /bin/rm` is caught, `s""udo x` is not). With `allow` there is no shell:
   the line is split into words, the program must match `allow` by name
   (`/bin/rm` does not match `rm`), and `;`, `|` and `$(...)` stay literal
   arguments. Programs that start others (`env`, `xargs`, `find -exec`,
@@ -398,14 +399,19 @@ unread message, agentd:
    `Auto-Submitted: auto-replied`);
 3. marks the message as read.
 
-Replies in the same thread continue the same session. Several rules prevent
-mail loops:
+Replies in the same thread from the same sender continue the same session.
+Several rules prevent mail loops:
 
 - bounces, auto-replies, list mail and `noreply` senders are skipped;
 - the agent can answer `NO_REPLY` to stay silent;
 - `allow_from` restricts senders, and `allow_recipients` on the connector
-  restricts who `send_email` may write to;
+  restricts who `send_email` may write to. A `Reply-To` outside
+  `allow_from` is ignored and the reply goes to `From`;
 - a message that keeps failing is retried 3 times, then marked read.
+
+`allow_from` is not authentication: anyone can forge a `From` header. Don't
+give a mail-triggered agent tools you wouldn't hand to whoever can send it
+mail, and set `allow_recipients` when it may send email.
 
 ## Deploy
 
@@ -466,9 +472,10 @@ the core.
 - **Bounded tool calls.** Each tool call has a timeout, its output is
   truncated, and panics are recovered. Each run has a step limit
   (`max_steps`, default 12).
-- **Credentials stay at home.** `http` connectors send their credentials only
-  to their own `base_url` host. Model-chosen URLs must match `allow_hosts`,
-  and the same check applies to redirects.
+- **Credentials stay at home.** `http` and MCP connectors send their
+  credentials only to their own scheme and host, and never follow a redirect
+  away from it. Model-chosen URLs must match `allow_hosts`, and the same
+  check applies to redirects.
 - **Mail.** SMTP header values are sanitized, and STARTTLS is required unless
   you set `tls: none`.
 - Hide trigger-only agents from the APIs with `expose: false`.

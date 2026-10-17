@@ -44,8 +44,10 @@ func TestShellFullMode(t *testing.T) {
 	if r, _ := runShell(t, c, `{"command":"echo \"[$AGENTD_SECRET_FOR_TEST]\""}`); r.Stdout != "[]\n" {
 		t.Errorf("environment leaked: %q", r.Stdout)
 	}
-	if _, err := runShell(t, c, `{"command":"sudo ls"}`); err == nil || !strings.Contains(err.Error(), "denied") {
-		t.Errorf("deny: %v", err)
+	for _, cmd := range []string{"sudo ls", "sudo /bin/ls"} {
+		if _, err := runShell(t, c, `{"command":"`+cmd+`"}`); err == nil || !strings.Contains(err.Error(), "denied") {
+			t.Errorf("deny %q: %v", cmd, err)
+		}
 	}
 }
 

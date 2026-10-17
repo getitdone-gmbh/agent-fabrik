@@ -15,6 +15,10 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default; jobs that need more ask for it.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

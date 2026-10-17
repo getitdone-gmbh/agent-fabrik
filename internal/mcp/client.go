@@ -219,7 +219,22 @@ func NewHTTPClient(url string, headers map[string]string, timeout time.Duration,
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
-	return &Client{t: &httpTransport{url: url, headers: headers, client: &http.Client{Timeout: timeout, Transport: rt}}}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: rt,
+		// headers usually carry the server's credentials; Go would re-send
+		// custom ones (X-Api-Key, ...) to any redirect target.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("redirect to %s://%s is not allowed", req.URL.Scheme, req.URL.Host)
+			}
+			return nil
+		},
+	}
+	return &Client{t: &httpTransport{url: url, headers: headers, client: client}}
 }
 
 func (h *httpTransport) setProtocol(v string) {

@@ -125,7 +125,7 @@ func (c *ShellConnector) run(ctx context.Context, args json.RawMessage) (string,
 		return "", errors.New("command is empty")
 	}
 	for _, p := range c.cfg.Deny {
-		if ok, _ := path.Match(p, line); ok {
+		if denyMatch(p, line) {
 			return "", fmt.Errorf("command denied by policy (%s)", p)
 		}
 	}
@@ -310,4 +310,12 @@ func SplitWords(s string) ([]string, error) {
 		return nil, errors.New("command is empty")
 	}
 	return words, nil
+}
+
+// denyMatch is path.Match with "*" also crossing "/": deny patterns match
+// whole command lines, where "sudo *" must catch "sudo /bin/rm".
+func denyMatch(pattern, line string) bool {
+	slash := func(s string) string { return strings.ReplaceAll(s, "/", "\x00") }
+	ok, _ := path.Match(slash(pattern), slash(line))
+	return ok
 }

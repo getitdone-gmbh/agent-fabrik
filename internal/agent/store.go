@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +94,18 @@ func (m *MemoryStore) Delete(_ context.Context, agent, session string) error {
 	defer m.mu.Unlock()
 	delete(m.items, key(agent, session))
 	return nil
+}
+
+// DeleteAgents forgets the sessions of every agent whose name starts with
+// prefix (a tenant's "<id>/").
+func (m *MemoryStore) DeleteAgents(prefix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.items {
+		if strings.HasPrefix(k, prefix) {
+			delete(m.items, k)
+		}
+	}
 }
 
 // FileStore writes one JSON file per session (survives restarts when the
