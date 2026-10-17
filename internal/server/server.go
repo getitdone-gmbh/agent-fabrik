@@ -94,6 +94,9 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 	if m.Enabled() {
 		s.tenantRoutes(mux, h)
 	}
+	if cfg.Server.UI == nil || *cfg.Server.UI {
+		uiRoutes(mux)
+	}
 	return s.cors(s.limitBody(mux))
 }
 

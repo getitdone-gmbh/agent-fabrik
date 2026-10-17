@@ -39,6 +39,7 @@ type ServerConfig struct {
 	CORSOrigins       []string `yaml:"cors_origins"`
 	MCP               *bool    `yaml:"mcp"`        // serve agents at /mcp (default true)
 	OpenAI            *bool    `yaml:"openai_api"` // serve /v1/chat/completions (default true)
+	UI                *bool    `yaml:"ui"`         // serve the web UI at /ui/ (default true)
 	MaxBodyBytes      int64    `yaml:"max_body_bytes"`
 }
 

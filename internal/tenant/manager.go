@@ -89,7 +89,7 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, system *app.Ap
 	if err != nil {
 		return nil, err
 	}
-	if ephemeral && cfg.Tenancy.Store.Type != "" && cfg.Tenancy.Store.Type != "memory" {
+	if ephemeral && cfg.Tenancy.Enabled && cfg.Tenancy.Store.Type != "" && cfg.Tenancy.Store.Type != "memory" {
 		return nil, errors.New("tenancy.secret_key is required with a persistent store: it encrypts tenant secrets. " +
 			"With the built-in config set RUNTIME_SECRET_KEY (openssl rand -base64 32) and keep it safe")
 	}

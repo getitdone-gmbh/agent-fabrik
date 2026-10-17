@@ -11,6 +11,7 @@ server:
   # cors_origins: ["https://app.example.com"]
   # mcp: true                   # serve agents as MCP tools at /mcp
   # openai_api: true            # serve /v1/chat/completions and /v1/models
+  # ui: true                    # web UI at /ui/ (sign in with a token; no data without one)
 
 memory:
   type: memory                  # or "file" with dir: /data/sessions (persistent volume)
