@@ -382,6 +382,10 @@ func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
 		}
 		c := &connectorTools{Name: name, Type: cc.Type, Status: "ok", Tools: []toolInfo{}}
 		if msg, failed := a.Failed[name]; failed {
+			// Remote servers answer with whole HTML pages; the start is enough.
+			if r := []rune(msg); len(r) > 300 {
+				msg = string(r[:300]) + "…"
+			}
 			c.Status, c.Error = "unavailable", msg
 		}
 		byName[name] = c
