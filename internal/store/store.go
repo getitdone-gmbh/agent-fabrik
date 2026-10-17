@@ -42,11 +42,11 @@ type Tenant struct {
 
 // APIKey authenticates a tenant. Only the SHA-256 hash is stored.
 type APIKey struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenant_id"`
-	Name      string    `json:"name"`
-	Hash      string    `json:"-"`
-	Prefix    string    `json:"prefix"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
+	Hash     string `json:"-"`
+	Prefix   string `json:"prefix"`
 	// Scope is ScopeAdmin (everything the tenant may do) or ScopeRun (only
 	// run agents). Empty means admin, for keys issued before scopes existed.
 	Scope string `json:"scope"`
