@@ -28,15 +28,15 @@ up:
 down: # secrets are only needed to start; dummies let compose tear down
 	AGENT_RUNTIME_TOKEN=x RUNTIME_SECRET_KEY=x docker compose -p agentd -f deploy/docker-compose.yaml down
 
-# Static Linux binaries + checksums in dist/ (used by .github/workflows/release.yml).
-RELEASE_TARGETS ?= linux/amd64 linux/arm64
+# Static binaries + checksums in dist/ (used by .github/workflows/release.yml).
+RELEASE_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 release:
 	rm -rf dist && mkdir -p dist
 	for t in $(RELEASE_TARGETS); do \
 	  os=$${t%/*}; arch=$${t#*/}; d=agentd_$(VERSION)_$${os}_$${arch}; \
 	  mkdir -p dist/$$d && \
 	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags="$(LDFLAGS)" -o dist/$$d/agentd . && \
-	  cp README.md agents.yaml dist/$$d/ && cp -r examples dist/$$d/ && \
+	  cp README.md LICENSE agents.yaml dist/$$d/ && cp -r examples dist/$$d/ && \
 	  tar -C dist -czf dist/$$d.tar.gz $$d && rm -rf dist/$$d || exit 1; \
 	done
 	cd dist && sha256sum *.tar.gz > SHA256SUMS 2>/dev/null || shasum -a 256 *.tar.gz > SHA256SUMS

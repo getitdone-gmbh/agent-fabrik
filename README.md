@@ -409,8 +409,8 @@ mail loops:
 
 ## Deploy
 
-**Binaries.** Every tag `v*` publishes static binaries for `linux/amd64` and
-`linux/arm64` with `SHA256SUMS` on the
+**Binaries.** Every tag `v*` publishes static binaries for Linux and macOS
+(`amd64`, `arm64`) with `SHA256SUMS` on the
 [releases page](https://github.com/getitdone-gmbh/agentd/releases):
 
 ```bash
@@ -473,8 +473,8 @@ the core.
   you set `tls: none`.
 - Hide trigger-only agents from the APIs with `expose: false`.
 
-Found a vulnerability? Please report it privately to the maintainers. Don't
-open a public issue.
+Found a vulnerability? Please report it privately, see
+[SECURITY.md](SECURITY.md). Don't open a public issue.
 
 ## Performance
 
@@ -535,7 +535,8 @@ AR_TEST_DATABASE_URL="postgres://postgres:test@localhost:55432/postgres?sslmode=
 | `internal/server` | HTTP, SSE, OpenAI, MCP, webhooks, tenant and admin API, web UI (`internal/server/ui`) |
 | `internal/config` | config loading and validation |
 
-Contributions are welcome. Please open an issue first for larger changes.
+Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md). Please
+open an issue first for larger changes.
 
 ## License
 
