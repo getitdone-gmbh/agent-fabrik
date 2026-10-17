@@ -128,7 +128,7 @@ or set `TENANCY_ENABLED=true` with the embedded config. Then:
 | `GET /v1/config`, `PUT /v1/config[?prune=true]` | read / apply a whole YAML or JSON document (`prune` deletes what's missing) |
 | `GET/PUT/DELETE /v1/config/{providers\|connectors\|agents}/{name}` | single definitions |
 | `GET /v1/secrets`, `PUT/DELETE /v1/secrets/{name}` | write-only secret vault (`{"value": "..."}`) |
-| `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | runtime API keys (`ark_...`, stored hashed) |
+| `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | runtime API keys (`ark_...`, stored hashed); `POST {"name","scope":"run","agents":[...]}` issues a key that can only run (those) agents, for app backends |
 | `POST /v1/tenants/{tenant}/hooks/{agent}[/{name}]` | tenant webhooks |
 | all routes under **API** below | scoped to the caller's tenant |
 

@@ -249,6 +249,59 @@ secrets:
 		t.Fatalf("run: %d %v", code, out)
 	}
 
+	// Run keys: an app backend gets a key that can run agents, nothing else.
+	code, out = e.call(t, acmeKey, "POST", "/v1/keys", `{"name":"backend","scope":"run","agents":["helper"]}`)
+	if code != 201 {
+		t.Fatalf("create run key: %d %v", code, out)
+	}
+	runKey := out["key"].(string)
+	if info := out["info"].(map[string]any); info["scope"] != "run" {
+		t.Errorf("run key info: %v", info)
+	}
+	if code, out := e.call(t, runKey, "POST", "/v1/agents/helper/run", `{"input":"from backend"}`); code != 200 || out["output"] != "ANSWER: echo: from backend" {
+		t.Errorf("run key run: %d %v", code, out)
+	}
+	if _, out := e.call(t, runKey, "GET", "/v1/agents", ""); len(out["agents"].([]any)) != 1 {
+		t.Errorf("run key agents: %v", out)
+	}
+	for _, c := range [][3]string{
+		{"GET", "/v1/config", ""}, {"GET", "/v1/secrets", ""}, {"GET", "/v1/me", ""},
+		{"POST", "/v1/keys", `{"name":"escalate"}`}, {"PUT", "/v1/secrets/X", `{"value":"y"}`},
+		{"GET", "/v1/files", ""},
+	} {
+		if code, _ := e.call(t, runKey, c[0], c[1], c[2]); code != 403 {
+			t.Errorf("run key reached %s %s: %d", c[0], c[1], code)
+		}
+	}
+	_, out = e.call(t, acmeKey, "POST", "/v1/keys", `{"name":"other","scope":"run","agents":["someone-else"]}`)
+	otherKey := out["key"].(string)
+	if _, out := e.call(t, otherKey, "GET", "/v1/agents", ""); len(out["agents"].([]any)) != 0 {
+		t.Errorf("restricted key sees agents: %v", out)
+	}
+	if code, _ := e.call(t, otherKey, "POST", "/v1/agents/helper/run", `{"input":"x"}`); code != 404 {
+		t.Errorf("restricted key ran helper: %d", code)
+	}
+	if code, _ := e.call(t, otherKey, "POST", "/v1/chat/completions", `{"model":"helper","messages":[{"role":"user","content":"x"}]}`); code != 404 {
+		t.Errorf("restricted key used chat completions: %d", code)
+	}
+	if code, _ := e.call(t, otherKey, "GET", "/v1/models", ""); code != 200 {
+		t.Errorf("restricted key models: %d", code)
+	}
+	for _, body := range []string{`{"scope":"root"}`, `{"scope":"admin","agents":["helper"]}`, `{"scope":"run","agents":["../x"]}`} {
+		if code, _ := e.call(t, acmeKey, "POST", "/v1/keys", body); code != 400 {
+			t.Errorf("bad key options %s: %d", body, code)
+		}
+	}
+	_, out = e.call(t, acmeKey, "GET", "/v1/keys", "")
+	scopes := map[string]string{}
+	for _, k := range out["keys"].([]any) {
+		k := k.(map[string]any)
+		scopes[fmt.Sprint(k["name"])] = fmt.Sprint(k["scope"])
+	}
+	if scopes["backend"] != "run" || scopes["initial"] != "admin" {
+		t.Errorf("key scopes: %v", scopes)
+	}
+
 	// Isolation: beta sees nothing of acme.
 	if _, out := e.call(t, betaKey, "GET", "/v1/agents", ""); len(out["agents"].([]any)) != 0 {
 		t.Errorf("beta sees agents: %v", out)

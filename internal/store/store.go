@@ -47,8 +47,19 @@ type APIKey struct {
 	Name      string    `json:"name"`
 	Hash      string    `json:"-"`
 	Prefix    string    `json:"prefix"`
+	// Scope is ScopeAdmin (everything the tenant may do) or ScopeRun (only
+	// run agents). Empty means admin, for keys issued before scopes existed.
+	Scope string `json:"scope"`
+	// Agents limits a run key to these agents; empty means all agents.
+	Agents    []string  `json:"agents,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// Key scopes.
+const (
+	ScopeAdmin = "admin"
+	ScopeRun   = "run"
+)
 
 // Resource is a stored definition (the same schema as the YAML sections).
 type Resource struct {
@@ -161,3 +172,18 @@ func merge(cur []Resource, secretNames []string, ch Change) State {
 
 // Month returns the usage bucket for t.
 func Month(t time.Time) string { return t.UTC().Format("2006-01") }
+
+// keyScope maps the legacy empty scope to admin.
+func keyScope(s string) string {
+	if s == "" {
+		return ScopeAdmin
+	}
+	return s
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
