@@ -99,6 +99,7 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 	h("GET /v1/agents/{name}", s.getAgent)
 	h("POST /v1/agents/{name}/run", s.runAgent)
 	h("DELETE /v1/agents/{name}/sessions/{id}", s.deleteSession)
+	h("GET /v1/tools", s.listTools)
 	mux.HandleFunc("POST /v1/hooks/{name}", s.webhook)
 	mux.HandleFunc("POST /v1/hooks/{name}/{hook}", s.webhook)
 	mux.HandleFunc("POST /v1/tenants/{tenant}/hooks/{name}", s.webhook)
@@ -337,6 +338,60 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, info(ag))
+}
+
+type toolInfo struct {
+	ID          string `json:"id"` // <connector>.<tool>, the form agents' tools patterns match
+	Description string `json:"description,omitempty"`
+}
+
+type connectorTools struct {
+	Name   string     `json:"name"`
+	Type   string     `json:"type"`
+	Status string     `json:"status"` // ok or unavailable
+	Error  string     `json:"error,omitempty"`
+	Tools  []toolInfo `json:"tools"`
+}
+
+// listTools shows, per connector, the tools agents can select, and which
+// connectors failed to start (tenants' connectors are optional, so a typo in
+// a password would otherwise only show up as an agent without tools).
+func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
+	a, release, err := s.m.Acquire(r.Context(), tenantOf(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer release()
+	byName := map[string]*connectorTools{}
+	for _, t := range a.Registry.All() {
+		c := byName[t.Connector]
+		if c == nil {
+			typ := "builtin"
+			if cc, ok := a.Config.Connectors[t.Connector]; ok {
+				typ = cc.Type
+			}
+			c = &connectorTools{Name: t.Connector, Type: typ, Status: "ok", Tools: []toolInfo{}}
+			byName[t.Connector] = c
+		}
+		c.Tools = append(c.Tools, toolInfo{ID: t.Connector + "." + t.Local, Description: t.Description})
+	}
+	for name, cc := range a.Config.Connectors {
+		if _, ok := byName[name]; ok {
+			continue
+		}
+		c := &connectorTools{Name: name, Type: cc.Type, Status: "ok", Tools: []toolInfo{}}
+		if msg, failed := a.Failed[name]; failed {
+			c.Status, c.Error = "unavailable", msg
+		}
+		byName[name] = c
+	}
+	out := make([]*connectorTools, 0, len(byName))
+	for _, c := range byName {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	writeJSON(w, http.StatusOK, map[string]any{"connectors": out})
 }
 
 type runRequest struct {

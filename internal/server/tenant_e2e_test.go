@@ -249,6 +249,30 @@ secrets:
 		t.Fatalf("run: %d %v", code, out)
 	}
 
+	// Tool catalogue: what the connectors offer, and which ones are broken.
+	if code, _ := e.call(t, acmeKey, "PUT", "/v1/config/connectors/broken", `{"type":"mcp","url":"http://127.0.0.1:1/mcp"}`); code != 200 {
+		t.Fatalf("put broken connector: %d", code)
+	}
+	code, out = e.call(t, acmeKey, "GET", "/v1/tools", "")
+	if code != 200 {
+		t.Fatalf("tools: %d %v", code, out)
+	}
+	cat := map[string]map[string]any{}
+	for _, c := range out["connectors"].([]any) {
+		c := c.(map[string]any)
+		cat[c["name"].(string)] = c
+	}
+	if c := cat["tools"]; c == nil || c["status"] != "ok" || len(c["tools"].([]any)) == 0 || c["type"] != "mcp" {
+		t.Errorf("tools connector: %v", c)
+	}
+	if c := cat["broken"]; c == nil || c["status"] != "unavailable" || c["error"] == "" {
+		t.Errorf("broken connector: %v", c)
+	}
+	if c := cat["system"]; c == nil || c["type"] != "builtin" {
+		t.Errorf("system connector: %v", c)
+	}
+	e.call(t, acmeKey, "DELETE", "/v1/config/connectors/broken", "")
+
 	// Run keys: an app backend gets a key that can run agents, nothing else.
 	code, out = e.call(t, acmeKey, "POST", "/v1/keys", `{"name":"backend","scope":"run","agents":["helper"]}`)
 	if code != 201 {
@@ -267,7 +291,7 @@ secrets:
 	for _, c := range [][3]string{
 		{"GET", "/v1/config", ""}, {"GET", "/v1/secrets", ""}, {"GET", "/v1/me", ""},
 		{"POST", "/v1/keys", `{"name":"escalate"}`}, {"PUT", "/v1/secrets/X", `{"value":"y"}`},
-		{"GET", "/v1/files", ""},
+		{"GET", "/v1/files", ""}, {"GET", "/v1/tools", ""},
 	} {
 		if code, _ := e.call(t, runKey, c[0], c[1], c[2]); code != 403 {
 			t.Errorf("run key reached %s %s: %d", c[0], c[1], code)
