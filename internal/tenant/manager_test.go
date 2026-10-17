@@ -280,6 +280,43 @@ func TestExternalIDsNeverCollide(t *testing.T) {
 	}
 }
 
+func TestExternalAuthRequireField(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer admin":
+			io.WriteString(w, `{"id":1,"admin":true}`)
+		case "Bearer user":
+			io.WriteString(w, `{"id":2,"admin":false}`)
+		case "Bearer missing":
+			io.WriteString(w, `{"id":3}`)
+		case "Bearer stringy":
+			io.WriteString(w, `{"id":4,"admin":"yes"}`)
+		default:
+			w.WriteHeader(401)
+		}
+	}))
+	defer idp.Close()
+	m, st := newManager(t, "  external_auth:\n    enabled: true\n    userinfo_url: "+idp.URL+"\n    id_field: id\n    tenant_prefix: itd-\n    require_field: admin\n")
+	ctx := context.Background()
+	if id, err := m.Authenticate(ctx, "admin"); err != nil || id != "itd-1" {
+		t.Fatalf("admin: id=%q err=%v", id, err)
+	}
+	for _, tok := range []string{"user", "missing", "stringy"} {
+		if _, err := m.Authenticate(ctx, tok); !errors.Is(err, ErrUnauthorized) {
+			t.Errorf("%s: want unauthorized, got %v", tok, err)
+		}
+		// Twice: the cached lookup must refuse as well.
+		if _, err := m.Authenticate(ctx, tok); !errors.Is(err, ErrUnauthorized) {
+			t.Errorf("%s (cached): want unauthorized, got %v", tok, err)
+		}
+	}
+	for _, id := range []string{"itd-2", "itd-3", "itd-4"} {
+		if _, err := st.GetTenant(ctx, id); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("tenant %s created for a refused user: %v", id, err)
+		}
+	}
+}
+
 func TestNegativeUsageIgnored(t *testing.T) {
 	m, _ := newManager(t, "")
 	ctx := context.Background()

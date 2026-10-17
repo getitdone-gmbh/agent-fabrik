@@ -18,7 +18,9 @@
 #   TENANT_SHARED_LLM    true -> tenants may use the LLM above without their own key
 #   EXTERNAL_AUTH_USERINFO_URL  optional: let users of your IdP log in with their
 #                        own token (OIDC userinfo); also EXTERNAL_AUTH_ID_FIELD,
-#                        EXTERNAL_AUTH_PLAN_FIELD, EXTERNAL_AUTH_TENANT_PREFIX
+#                        EXTERNAL_AUTH_PLAN_FIELD, EXTERNAL_AUTH_TENANT_PREFIX,
+#                        EXTERNAL_AUTH_REQUIRE_FIELD (e.g. admin: only users
+#                        whose userinfo has admin=true get in)
 #
 # For real deployments see examples/full.yaml and examples/multitenant.yaml.
 
@@ -61,6 +63,7 @@ tenancy:
     id_field: ${EXTERNAL_AUTH_ID_FIELD:-sub}
     plan_field: ${EXTERNAL_AUTH_PLAN_FIELD:-}
     tenant_prefix: ${EXTERNAL_AUTH_TENANT_PREFIX:-ext-}
+    require_field: ${EXTERNAL_AUTH_REQUIRE_FIELD:-}
     plan_map: {free: free, pro: pro, team: pro, business: pro}
   default_plan: free
   plans:
