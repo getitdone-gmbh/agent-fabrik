@@ -1,22 +1,96 @@
-# agentd: a tiny multi-tenant agent runtime
+<h1 align="center">agentd</h1>
 
-A tiny, single-binary, **multi-tenant** runtime for LLM agents. One process
-runs the agents of many users. Agents are rows in Postgres, not pods. Written in Go with two
-dependencies (`gopkg.in/yaml.v3`, `github.com/lib/pq`). Every protocol
-(MCP, HTTP, SMTP, IMAP) and every LLM API is implemented on the standard library.
+<p align="center">
+  <b>Agents are rows, not pods.</b><br>
+  A tiny, single-binary runtime that runs the LLM agents of thousands of users in one process.
+</p>
 
-| Measured (Apple M-series, fake LLM, real Postgres) | |
-|---|---|
-| Binary / container image | ~8.7 MB static binary, ~19 MB image; container uses ~12 MiB RAM at start |
-| Empty process | ~15 MB RSS, 0% CPU |
-| **2,000 tenants, 10,000 agents, 6,000 triggers, idle** | **35 MB RSS**, ~0% CPU |
-| 20,000 runs across all 2,000 tenants (all runtimes loaded) | 1,840 runs/s, 72 MB RSS (~18 KB per loaded tenant) |
-| Single tenant, 10,000 runs (2 LLM calls + 1 tool each) | ~1,400 runs/s, 43 MB peak, ~0.4 ms CPU/run |
-| Idle with 6,000 active triggers (~5 scheduled runs/s) | ~1% of one CPU core |
-| Postgres per agent definition (row + index) | ~350 bytes (10,000 agents: 3.5 MB) |
-| Postgres per stored session (short chat) | ~1.1 KB, expires after `session_ttl` |
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
+  <img alt="Go 1.25" src="https://img.shields.io/badge/go-1.25-00ADD8.svg?logo=go&logoColor=white">
+  <img alt="Dependencies: 2" src="https://img.shields.io/badge/dependencies-2-brightgreen.svg">
+  <img alt="Binary: ~9 MB" src="https://img.shields.io/badge/binary-~9%20MB-informational.svg">
+</p>
 
-## What it does
+---
+
+Most agent frameworks are libraries for one developer and one agent. Hosting
+agents *for other people* is a different problem: every user wants their own
+agents, keys, tools, schedules and limits, and you don't want a container per
+agent sitting idle at 3 a.m.
+
+**agentd** is that hosting layer. You define agents in YAML (or let your users
+do it over an API). Then you run them over HTTP, the OpenAI API, MCP,
+webhooks, cron or email. An idle agent costs ~350 bytes in Postgres. 2,000
+tenants with 10,000 agents and 6,000 triggers idle at **35 MB of RAM**.
+
+- 🪶 **Small.** ~9 MB static binary, ~19 MB distroless image. Two dependencies
+  (`yaml.v3`, `lib/pq`). MCP, SMTP, IMAP and every LLM API are implemented on
+  the Go standard library.
+- 🏢 **Multi-tenant by design.** Isolated tenants, plans and quotas, encrypted
+  secrets, an SSRF guard, and sign-in through your existing identity provider.
+- 🔌 **Speaks everything.** Claude, Mistral, Ollama, OpenAI, Gemini, Groq and
+  more. Tools come from MCP servers, HTTP APIs and email. Agents are served as
+  REST, OpenAI-compatible, MCP or SSE.
+- ⏰ **Agents that act on their own.** Cron, intervals, webhooks and an IMAP
+  inbox that answers in-thread.
+- 🖥️ **Batteries included.** A web UI, Prometheus metrics, file storage per
+  tenant, and horizontal scale-out on Postgres.
+
+## Contents
+
+[Quick start](#quick-start) ·
+[How it works](#how-it-works) ·
+[Multi-tenancy](#multi-tenancy) ·
+[Web UI](#web-ui) ·
+[API](#api) ·
+[Files](#files) ·
+[Email agents](#email-agents) ·
+[Deploy](#deploy) ·
+[Security](#security) ·
+[Performance](#performance) ·
+[Development](#development) ·
+[License](#license)
+
+## Quick start
+
+No API key needed if you have [Ollama](https://ollama.com) running locally:
+
+```bash
+git clone https://github.com/getitdone-gmbh/agentd && cd agentd
+make build
+
+cat > agents.yaml <<'YAML'
+providers:
+  local: {type: ollama, model: gemma4}   # or qwen3, llama3.1, ... (needs tool support)
+agents:
+  helper:
+    system: You are a concise, helpful assistant.
+    tools: ["system.*"]
+YAML
+
+./bin/agentd -run helper -input "What time is it in Tokyo right now?"
+# → It is currently 1:32 PM on Friday, October 2, 2026, in Tokyo.
+```
+
+The agent called its `system__now` tool to answer. Now serve it:
+
+```bash
+./bin/agentd -chat helper     # chat in the terminal
+./bin/agentd                  # serve on :8080, web UI at http://localhost:8080
+./bin/agentd -check           # validate the config and list every tool
+```
+
+Prefer a hosted model? Swap the provider:
+
+```yaml
+providers:
+  claude: {type: anthropic, api_key: "${ANTHROPIC_API_KEY}"}
+```
+
+[`examples/full.yaml`](examples/full.yaml) documents every option.
+
+## How it works
 
 ```
             triggers                         agent loop                      connectors (tools)
@@ -25,99 +99,126 @@ dependencies (`gopkg.in/yaml.v3`, `github.com/lib/pq`). Every protocol
  MCP server├─┼──▶ agent ──▶ provider │ + history (sessions) │ ◀──────▶ ├─ HTTP APIs (typed endpoints,
  webhooks  ├─┘                       │ + tools, max steps   │          │   allowlisted requests)
  cron      │                         └──────────────────────┘          ├─ SMTP (send_email)
- IMAP inbox┘         Claude · Mistral · Ollama · OpenAI · Groq ·       └─ IMAP (list/read/mark_read)
-                     Gemini · OpenRouter · DeepSeek · vLLM · ...
+ IMAP inbox┘         Claude · Mistral · Ollama · OpenAI · Groq ·       ├─ IMAP (list/read/mark_read)
+                     Gemini · OpenRouter · DeepSeek · vLLM · ...       └─ files (per tenant)
 ```
 
-- **LLM providers:** native Anthropic Messages API (Claude), native Ollama
-  `/api/chat`, and an OpenAI-compatible adapter with presets for `openai`,
-  `mistral`, `groq`, `openrouter`, `gemini`, `deepseek`, `together`,
-  `scaleway`, `ionos`, `xai`, `lmstudio`, `vllm` and Azure OpenAI. Any
-  other endpoint works as `openai-compatible`.
-- **Connectors** supply tools:
-  - `mcp`: any MCP server over streamable HTTP (JSON and SSE responses,
-    sessions) or stdio subprocesses, with include/exclude filters.
-  - `http`: declared endpoints become typed tools, plus a generic `request`
-    tool limited to allowed hosts (private IPs blocked by default).
-  - `email` / `smtp` / `imap`: `send_email`, `list_emails`, `read_email`,
-    `mark_read`.
-  - `system` (built in): `now`.
-- **Triggers:** HTTP (JSON or SSE streaming), an OpenAI-compatible
-  `/v1/chat/completions` (the agent name is the model), MCP (each agent is
-  a tool at `/mcp`), webhooks (GitHub HMAC or a shared secret), 5-field cron
-  schedules with time zones, intervals, and IMAP inbox polling with automatic
-  threaded replies.
-- **Sessions:** conversation memory per session, in memory (TTL + LRU) or
-  as files on a volume. Email threads map to sessions automatically.
+**Providers.** agentd has a native Anthropic Messages API client (Claude) and
+a native Ollama `/api/chat` client. An OpenAI-compatible adapter has presets
+for `openai`, `mistral`, `groq`, `openrouter`, `gemini`, `deepseek`,
+`together`, `scaleway`, `ionos`, `xai`, `lmstudio`, `vllm` and Azure OpenAI.
+Any other endpoint works as `openai-compatible`.
 
-## Multi-tenancy: many users, one runtime
+**Connectors** supply the tools:
 
-Enable `tenancy` (see [`examples/multitenant.yaml`](examples/multitenant.yaml)),
-or set `TENANCY_ENABLED=true` with the embedded config. Then:
+| Type | Tools |
+|---|---|
+| `mcp` | any MCP server over streamable HTTP (JSON and SSE, sessions) or stdio, with include/exclude filters |
+| `http` | declared endpoints become typed tools, plus a generic `request` tool limited to allowed hosts |
+| `email` / `smtp` / `imap` | `send_email`, `list_emails`, `read_email`, `mark_read` |
+| `files` (built in) | `files__list`, `files__read`, `files__write`, `files__delete` |
+| `system` (built in) | `now` |
 
-- **Tenants** are isolated accounts. They are created by the admin
-  (`POST /v1/admin/tenants`) or automatically for **users of your identity
-  provider or platform** (`tenancy.external_auth`). They authenticate with
-  their existing token (JWT or API key), which the runtime validates via a
-  userinfo endpoint: OIDC `/userinfo` of Keycloak, Zitadel, Auth0 or Google,
-  or any "who am I" API. Each user gets a tenant (`ext-<id>`); the plan can
-  come from a claim (`plan_field`, `plan_map`).
-- **Self-service:** tenants manage their own providers, connectors, agents
-  and secrets over the API, using the same YAML schema as the config file:
+**Triggers.** You can start an agent in several ways:
 
-  ```bash
-  curl -X PUT $RT/v1/secrets/MISTRAL_KEY -H "Authorization: Bearer $TOKEN" -d '{"value":"..."}'
-  curl -X PUT $RT/v1/config -H "Authorization: Bearer $TOKEN" --data-binary @- <<'YAML'
-  providers:
-    mistral: {type: mistral, api_key: "${secret:MISTRAL_KEY}"}
-  agents:
-    support:
-      provider: mistral
-      system: You answer customer questions.
-      triggers: [{type: cron, schedule: "0 8 * * 1-5", timezone: Europe/Berlin}]
-  YAML
-  curl $RT/v1/agents/support/run -H "Authorization: Bearer $TOKEN" -d '{"input":"hi"}'
-  ```
-- **Low cost per agent:** a tenant's runtime (providers, MCP clients, agents)
-  is built on first use, shared by concurrent runs, rebuilt atomically when
-  its definitions change, and unloaded after `runtime_idle_ttl`. One
-  heap-based scheduler with a bounded worker pool fires every tenant's cron,
-  interval and IMAP triggers, with random start offsets so thousands of
-  agents don't fire at once. An idle agent costs a database row plus a heap
-  entry per trigger.
-- **Plans and limits** per tenant: agents, connectors, providers, secrets and
-  triggers; concurrent runs; runs per minute; monthly tokens; `max_steps`;
-  minimum cron/poll intervals; allowed connector types; use of the
-  operator's **shared providers** (e.g. an operator-paid Mistral key or an
-  in-cluster Ollama). A global `server.max_concurrent_runs` caps the whole
-  process. Usage is metered per month (`GET /v1/me`).
-- **Isolation and security:**
-  - Secrets are encrypted with AES-256-GCM (`tenancy.secret_key`) and bound
-    to tenant and name. They are never returned by the API.
-  - Tenant documents can only reference `${secret:NAME}`, never server
-    environment variables.
-  - stdio MCP servers and `allow_private` are refused.
-  - Every tenant-controlled connection (LLM `base_url`, MCP, HTTP tools,
-    IMAP, SMTP) goes through an SSRF guard that blocks loopback, private,
-    link-local/metadata, CGNAT and other internal ranges at connect time, so
-    DNS rebinding is covered. Specific internal services can be allowed with
-    `allow_networks`.
-  - Sessions, usage and webhooks are namespaced per tenant. Tenant webhooks
-    always need their own secret.
-  - Every change is validated transactionally: an agent can't reference a
-    missing provider, and a secret that is still in use can't be deleted.
-- **Scale-out:** with the Postgres store, run several replicas behind the
-  service. Runs are served by any replica. Exactly one replica (a Postgres
-  advisory lock) runs the scheduler, picks up changes from all replicas, and
-  fails over automatically. Runs of one session are serialized across
-  replicas with a Postgres lock, and per-process limits (runs per minute,
-  concurrent runs) are split by `tenancy.replicas` (`AGENT_REPLICAS`). All
-  locks are transaction-scoped, so the store also works behind PgBouncer in
-  transaction mode.
-- The agents in the config file keep working as the read-only **system**
-  tenant, reached with the admin token.
+- over HTTP, as JSON or an SSE stream;
+- through an OpenAI-compatible `/v1/chat/completions`, where the agent name is the model;
+- over MCP, where each agent is a tool at `/mcp`;
+- by webhook, signed with GitHub HMAC or a shared secret;
+- on a 5-field cron schedule with time zones, or at an interval;
+- by polling an IMAP inbox, with threaded replies.
 
-### Tenant API
+**Sessions.** Each session keeps its own conversation memory: in memory (TTL +
+LRU), as files on a volume, or in Postgres. An email thread maps to a session
+automatically.
+
+### Config values
+
+Config values support `${VAR}`, `${VAR:-default}`, `${VAR:?error message}`
+and `${file:/run/secrets/key}`. They are expanded **after** YAML parsing, so a
+secret may contain any character without breaking the document. `$${` gives a
+literal `${`.
+
+Without `-config`, agentd looks for a config in this order:
+
+1. `$AGENT_CONFIG`
+2. inline YAML in `$AGENT_CONFIG_YAML`
+3. `./agents.yaml`
+4. the built-in [`agents.yaml`](agents.yaml), which reads only env vars
+   (`LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `MCP_URL`,
+   `TENANCY_ENABLED`, ...)
+
+## Multi-tenancy
+
+Turn on `tenancy` (see [`examples/multitenant.yaml`](examples/multitenant.yaml),
+or [`examples/local.yaml`](examples/local.yaml) for a laptop without Postgres).
+One process then serves many isolated users.
+
+```bash
+# As the operator: create a tenant and get its API key
+curl -X POST $RT/v1/admin/tenants -H "Authorization: Bearer $ADMIN" -d '{"id":"alice"}'
+# → {"key":"ark_...","tenant":{"id":"alice","plan":"free",...}}
+
+# As alice: bring your own key, define an agent, run it
+curl -X PUT $RT/v1/secrets/MISTRAL_KEY -H "Authorization: Bearer $KEY" -d '{"value":"..."}'
+curl -X PUT $RT/v1/config -H "Authorization: Bearer $KEY" --data-binary @- <<'YAML'
+providers:
+  mistral: {type: mistral, api_key: "${secret:MISTRAL_KEY}"}
+agents:
+  support:
+    provider: mistral
+    system: You answer customer questions.
+    triggers: [{type: cron, schedule: "0 8 * * 1-5", timezone: Europe/Berlin}]
+YAML
+curl $RT/v1/agents/support/run -H "Authorization: Bearer $KEY" -d '{"input":"hi"}'
+```
+
+**Tenants** are created by the admin or automatically for the users of your
+identity provider or platform (`tenancy.external_auth`). Users sign in with
+the token they already have (a JWT or an API key). agentd checks it against
+a userinfo endpoint: the OIDC `/userinfo` of Keycloak, Zitadel, Auth0 or
+Google, or any "who am I" API. Each user becomes a tenant (`ext-<id>`), and
+the plan can come from a claim (`plan_field`, `plan_map`).
+
+**Self-service.** Tenants manage their own providers, connectors, agents,
+secrets and keys over the API. They use the same YAML schema as the config
+file. Every change is validated in one transaction, so an agent can't
+reference a missing provider and a secret still in use can't be deleted.
+
+**Plans and limits.** You can limit each tenant by plan:
+
+- the number of agents, connectors, providers, secrets and triggers;
+- concurrent runs, runs per minute and monthly tokens;
+- `max_steps` and the minimum cron and poll intervals;
+- the allowed connector types;
+- access to your **shared providers**, such as an operator-paid Mistral key
+  or an in-cluster Ollama.
+
+`server.max_concurrent_runs` caps the whole process. `GET /v1/me` shows each
+tenant its limits and this month's usage.
+
+**Cheap when idle.** A tenant's runtime (providers, MCP clients, agents) is
+built on first use and shared by concurrent runs. It is rebuilt atomically
+when the tenant's definitions change and unloaded after `runtime_idle_ttl`.
+One heap-based scheduler with a bounded worker pool fires every tenant's
+triggers. Start times are randomly offset, so thousands of agents don't fire
+at once.
+
+**Scale-out.** With the Postgres store, run as many replicas as you like:
+
+- any replica serves runs;
+- exactly one replica, chosen by a Postgres advisory lock, runs the scheduler
+  and fails over automatically;
+- runs of one session are serialized across replicas;
+- per-process limits are split by `tenancy.replicas` (`AGENT_REPLICAS`);
+- all locks are transaction-scoped, so the store also works behind PgBouncer
+  in transaction mode.
+
+The agents in the config file keep working as the read-only **system**
+tenant, reached with the admin token.
+
+<details>
+<summary><b>Tenant and admin API</b></summary>
 
 | Route | Purpose |
 |---|---|
@@ -126,79 +227,54 @@ or set `TENANCY_ENABLED=true` with the embedded config. Then:
 | `GET/PUT/DELETE /v1/config/{providers\|connectors\|agents}/{name}` | single definitions |
 | `GET /v1/secrets`, `PUT/DELETE /v1/secrets/{name}` | write-only secret vault (`{"value": "..."}`) |
 | `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | runtime API keys (`ark_...`, stored hashed) |
+| `GET/PUT/DELETE /v1/files/{path}` | per-tenant file storage (see [Files](#files)) |
 | `POST /v1/tenants/{tenant}/hooks/{agent}[/{name}]` | tenant webhooks |
-| all routes under **API** below | scoped to the caller's tenant |
+| all routes under [API](#api) | scoped to the caller's tenant |
 
-Admin (with `server.auth_token`): `GET/POST /v1/admin/tenants`,
-`GET/PATCH/DELETE /v1/admin/tenants/{id}` (plan, limits override, disable),
-`POST /v1/admin/tenants/{id}/keys`, `GET /v1/admin/stats`. The admin token
-with `X-Tenant: <id>` acts as that tenant (support).
+Admin routes use `server.auth_token`:
 
-## Quick start
+- `GET/POST /v1/admin/tenants`
+- `GET/PATCH/DELETE /v1/admin/tenants/{id}` to change the plan, override
+  limits or disable a tenant
+- `POST /v1/admin/tenants/{id}/keys`
+- `GET /v1/admin/stats`
 
-```bash
-make build
-export ANTHROPIC_API_KEY=...        # or MISTRAL_API_KEY, or run Ollama locally
-./bin/agentd -config examples/full.yaml -check      # validate + list tools
-./bin/agentd -config examples/full.yaml -chat chat  # terminal chat
-./bin/agentd -config examples/full.yaml             # serve on :8080
-```
+The admin token with `X-Tenant: <id>` acts as that tenant (for support).
 
-Minimal config:
-
-```yaml
-providers:
-  claude: {type: anthropic, api_key: "${ANTHROPIC_API_KEY}"}
-agents:
-  helper:
-    system: You are helpful.
-    tools: ["system.*"]
-```
-
-Without `-config`, the runtime uses `$AGENT_CONFIG`, then inline YAML in
-`$AGENT_CONFIG_YAML`, then `./agents.yaml`, and finally the built-in
-[`agents.yaml`](agents.yaml), which is driven only by env vars
-(`LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `MCP_URL`, `TENANCY_ENABLED`, ...).
-
-[`examples/full.yaml`](examples/full.yaml) documents every option.
-
-### Config values
-
-`${VAR}`, `${VAR:-default}`, `${VAR:?error message}` and
-`${file:/run/secrets/key}` are expanded **after** YAML parsing, so secrets
-may contain any character without breaking the document. `$${` gives a
-literal `${`.
+</details>
 
 ## Web UI
 
-The binary ships a small web UI at `/ui/` (`/` redirects there). Sign in
-with a tenant key (`ark_...`), your platform token (with `external_auth`) or
-the admin token. Then you can:
+The binary ships a small web UI at `/ui/` (`/` redirects there). Sign in with
+a tenant key (`ark_...`), your platform token (with `external_auth`) or the
+admin token. In the UI you can:
 
-- see all agents with their provider, tools and triggers, and chat with
-  them (streamed, with tool calls shown);
-- create, edit and delete agents in a form (system prompt, provider, tools,
-  cron/interval/webhook/email triggers, limits) or as JSON;
+- see your agents with their provider, tools and triggers, and chat with them
+  (streamed, with tool calls shown);
+- create, edit and delete agents in a form or as JSON;
 - add providers (the API key is stored as an encrypted secret), connectors
   (from YAML templates), secrets and API keys;
 - as admin, switch between the system agents and any tenant.
 
-Without tenancy, the agents come from the config file: the UI lists them
-and chats with them, but cannot change them.
+The page is static: plain HTML, CSS and JS embedded in the binary, with no
+build step and no third-party code. It calls the same `/v1` API and is served
+with a strict Content-Security-Policy. Without tenancy, the UI can list and
+chat with the config-file agents but cannot change them.
 
-The page is static (plain HTML, CSS and JS embedded in the binary, no build
-step, no third-party code) and calls the same `/v1` API with the token you
-enter. It is served with a strict Content-Security-Policy (only its own
-scripts, styles and API, no framing). The token stays in the tab
-(`sessionStorage`), or in `localStorage` if you tick "Remember". Turn the UI
-off with `server.ui: false` (`AGENT_UI=false`).
+Running agentd behind your own dashboard? Turn the UI off with `server.ui: false`.
 
 ## API
 
-All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>`
-(or `X-API-Key`). The token is the admin token (`server.auth_token`), a
-tenant key, or an external (userinfo-validated) token. Without any token and without tenancy, the
-runtime logs a warning and the API is open. Only use that locally.
+All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>` (or
+`X-API-Key`). The token is one of these:
+
+- the admin token;
+- a tenant key;
+- an external token, validated against your userinfo endpoint.
+
+> [!WARNING]
+> If no token is configured and tenancy is off, agentd logs a warning and the
+> API is open. Only do that locally.
 
 | Route | Purpose |
 |---|---|
@@ -212,110 +288,170 @@ runtime logs a warning and the API is open. Only use that locally.
 | `POST /v1/hooks/{agent}[/{name}]` | webhook trigger (`X-Hub-Signature-256`, `X-Webhook-Secret` or `?secret=`) |
 
 ```bash
-curl -s localhost:8080/v1/agents/chat/run \
+curl -s localhost:8080/v1/agents/helper/run \
   -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" \
   -d '{"input":"What time is it in Tokyo?"}'
 ```
 
-Use it from Claude Code, Cursor, etc. as an MCP server:
+Any OpenAI client can talk to your agents. Point it at
+`http://localhost:8080/v1` and use the agent name as the model.
+
+Use your agents from Claude Code, Cursor and other MCP clients:
 
 ```bash
 claude mcp add --transport http agents https://agents.example.com/mcp \
   --header "Authorization: Bearer $AGENT_RUNTIME_TOKEN"
 ```
 
-Flags: `-config`, `-check`, `-chat <agent>`, `-run <agent> -input "..."`
+CLI flags: `-config`, `-check`, `-chat <agent>`, `-run <agent> -input "..."`
 (or stdin), `-version`.
 
 ## Files
 
-Every tenant has its own file storage (in the store, so Postgres with the
-postgres backend: shared by all replicas and covered by its backups).
+Every tenant has its own file storage. It lives in the store, so with
+Postgres all replicas share it and your database backups cover it.
 
-- Agents use it with `tools: ["files.*"]`: `files__list`, `files__read`
-  (text, in pieces for long files), `files__write` (create, overwrite or
-  append), `files__delete`. Grant only reading with
-  `tools: ["files.list", "files.read"]`.
-- The API uploads and downloads raw bytes, so users can hand agents
-  documents and fetch their results:
+```bash
+curl -X PUT $RT/v1/files/customers/list.csv -H "Authorization: Bearer $KEY" --data-binary @list.csv
+curl "$RT/v1/files?prefix=reports/" -H "Authorization: Bearer $KEY"
+curl $RT/v1/files/reports/2026-09.md -H "Authorization: Bearer $KEY"
+```
 
-  ```bash
-  curl -X PUT $RT/v1/files/kunden/liste.csv -H "Authorization: Bearer $KEY" --data-binary @liste.csv
-  curl $RT/v1/files?prefix=reports/ -H "Authorization: Bearer $KEY"
-  curl $RT/v1/files/reports/2026-09.md -H "Authorization: Bearer $KEY"
-  ```
+- Agents get access with `tools: ["files.*"]`. Use
+  `tools: ["files.list", "files.read"]` for read-only access.
+- `files__read` returns text in pieces for long files. `files__write` can
+  create, overwrite or append.
+- Plans cap storage with `max_files`, `max_file_mb` and `max_storage_mb`
+  (defaults 500, 5 and 50; `-1` means unlimited). The quota is checked in the
+  same transaction as the write, so parallel uploads can't overshoot it.
+- Paths are relative. `..`, absolute paths and control characters are
+  refused. Downloads are always sent as attachments with `nosniff`.
 
-- Plans cap it: `max_files`, `max_file_mb`, `max_storage_mb` (defaults 500,
-  5 and 50; `-1` = unlimited). The quota is checked in the same transaction
-  as the write, so parallel uploads cannot overshoot it. `GET /v1/me` reports
-  usage.
-- Paths are relative (`reports/2026-09.md`); `..`, absolute paths and
-  control characters are refused. Downloads are always sent as attachments
-  with `nosniff`, never rendered on the API origin.
-
-There is deliberately no shell and no host file system: agents of many
-tenants share one process.
+There is deliberately no shell and no host file system, because agents of
+many tenants share one process.
 
 ## Email agents
 
-An `imap` trigger polls the mailbox (default every minute). For each unread
-message it runs the agent with the sender, subject and plain-text body as
-input, and sends the final answer as a threaded reply (`In-Reply-To`,
-`References`, `Auto-Submitted: auto-replied`). Then it marks the message as
-read. Loop protection:
+Give an agent an inbox, and it answers its mail:
 
-- Bounces, auto-replies, list mail and `noreply` senders are skipped.
-- The agent can answer `NO_REPLY` to stay silent.
-- `allow_from` restricts senders; `allow_recipients` on the connector
-  restricts who `send_email` may write to.
-- A failing message is retried up to 3 times, then marked read.
+```yaml
+connectors:
+  mail:
+    type: email
+    smtp: {host: smtp.example.com, port: 587, username: bot@example.com, password: "${SMTP_PASSWORD}", from: "Support <bot@example.com>"}
+    imap: {host: imap.example.com, port: 993, username: bot@example.com, password: "${IMAP_PASSWORD}"}
+agents:
+  support:
+    system: You answer customer emails for ACME. Reply NO_REPLY to spam.
+    tools: ["mail.*"]
+    triggers: [{type: imap, connector: mail, every: 1m, allow_from: ["*@example.com"]}]
+```
 
-Replies in the same thread continue the same agent session.
+The `imap` trigger polls the mailbox (by default every minute). For each
+unread message, agentd:
+
+1. runs the agent with the sender, subject and plain-text body;
+2. sends the answer as a threaded reply (`In-Reply-To`, `References`,
+   `Auto-Submitted: auto-replied`);
+3. marks the message as read.
+
+Replies in the same thread continue the same session. Several rules prevent
+mail loops:
+
+- bounces, auto-replies, list mail and `noreply` senders are skipped;
+- the agent can answer `NO_REPLY` to stay silent;
+- `allow_from` restricts senders, and `allow_recipients` on the connector
+  restricts who `send_email` may write to;
+- a message that keeps failing is retried 3 times, then marked read.
 
 ## Deploy
 
-Everything is configured through env vars (see [`agents.yaml`](agents.yaml)).
-Multi-tenant mode needs `TENANCY_ENABLED=true`, `DATABASE_URL` (Postgres),
-`RUNTIME_SECRET_KEY` (`openssl rand -base64 32`; keep it safe, it decrypts
-tenant secrets) and `AGENT_RUNTIME_TOKEN` (admin). Optionally set
-`LLM_API_KEY` plus `TENANT_SHARED_LLM=true` to offer an operator-paid model
-to tenants. Scale replicas for throughput, not per agent.
+Everything can be configured with env vars (see [`agents.yaml`](agents.yaml)).
 
 | Target | File |
 |---|---|
-| Docker Compose (runtime + Postgres) | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml) |
+| Docker Compose (runtime + Postgres) | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml), `make up` |
 | Kubernetes (2 replicas, hardened pod) | [`deploy/kubernetes/agentd.yaml`](deploy/kubernetes/agentd.yaml) |
 | Cloud Native Buildpacks (`pack`, kpack, Heroku-style PaaS) | `go.mod` at the root + [`project.toml`](project.toml); listens on `$PORT` |
-| ITDone Cloud (as a customer app) | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
-| ITDone's own agent runtime | ArgoCD, `infra/k8s/envs/itdone-cloud/itdone-agentd/` in itdone-cloud; image built by [`.github/workflows/image.yml`](.github/workflows/image.yml) |
+| ITDone Cloud | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
 
-For a single-tenant setup, leave `TENANCY_ENABLED` unset; no database is
-needed. For custom configs, mount a file (`-config`, `AGENT_CONFIG`) or pass
-the YAML in `AGENT_CONFIG_YAML`.
+**Single tenant:** leave `TENANCY_ENABLED` unset. No database is needed.
 
-The `Dockerfile` builds a distroless, non-root image of about 19 MB. `GOMEMLIMIT` (default `48MiB` in the image) is a soft heap
-cap. Raise it if you run many concurrent agents with large contexts.
+**Multi-tenant** needs these env vars:
 
-## Security notes
+| Variable | What it is |
+|---|---|
+| `TENANCY_ENABLED=true` | turns on tenancy |
+| `DATABASE_URL` | the Postgres store |
+| `RUNTIME_SECRET_KEY` | `openssl rand -base64 32`; keep it safe, it decrypts tenant secrets |
+| `AGENT_RUNTIME_TOKEN` | the admin token |
 
-- Tool calls run with per-tool timeouts, output truncation, panic recovery
-  and a per-run step limit (`max_steps`, default 12).
-- `http` connectors send their configured credentials only to their own
-  `base_url` host. Model-chosen URLs must match `allow_hosts` and cannot
-  reach private or loopback addresses unless `allow_private: true`. The same
-  check applies to redirects.
-- SMTP header values are sanitized; STARTTLS is required unless
-  `tls: none`.
+To offer a model you pay for to all tenants, add `LLM_API_KEY` and
+`TENANT_SHARED_LLM=true`. Add replicas for throughput, not per agent.
+
+The `Dockerfile` builds a distroless, non-root image of about 19 MB.
+`GOMEMLIMIT` (default `48MiB` in the image) is a soft heap cap. Raise it if
+you run many concurrent agents with large contexts.
+
+## Security
+
+agentd runs other people's agents next to each other, so isolation is part of
+the core.
+
+- **Secrets** are encrypted with AES-256-GCM (`tenancy.secret_key`), bound to
+  their tenant and name, and never returned by the API. Tenant documents can
+  only reference `${secret:NAME}`, never server environment variables.
+- **SSRF guard.** Every connection a tenant controls (LLM `base_url`, MCP,
+  HTTP tools, IMAP, SMTP) is checked when it connects. Loopback, private,
+  link-local and metadata, CGNAT and other internal ranges are blocked, which
+  also covers DNS rebinding. Allow specific internal services with
+  `allow_networks`.
+- **No host access for tenants.** stdio MCP servers and `allow_private` are
+  refused.
+- **Namespacing.** Sessions, usage, files and webhooks are namespaced per
+  tenant. Tenant webhooks always need their own secret.
+- **Bounded tool calls.** Each tool call has a timeout, its output is
+  truncated, and panics are recovered. Each run has a step limit
+  (`max_steps`, default 12).
+- **Credentials stay at home.** `http` connectors send their credentials only
+  to their own `base_url` host. Model-chosen URLs must match `allow_hosts`,
+  and the same check applies to redirects.
+- **Mail.** SMTP header values are sanitized, and STARTTLS is required unless
+  you set `tls: none`.
 - Hide trigger-only agents from the APIs with `expose: false`.
 
-## Claude specifics
+Found a vulnerability? Please report it privately to the maintainers. Don't
+open a public issue.
 
-Default model is `claude-opus-5`. Assistant turns are replayed byte for byte
-(including thinking blocks), so multi-step tool loops remain valid. The
-runtime enables server-side refusal fallbacks by default
-(`fallbacks: default`). Set `fallbacks: off` on the provider to disable them,
-for example when the provider points at a proxy that rejects the parameter.
-`effort` maps to `output_config.effort`.
+## Performance
+
+Measured on an Apple M-series machine with a fake LLM and real Postgres:
+
+| Scenario | Result |
+|---|---|
+| Binary / container image | ~8.7 MB static binary, ~19 MB image, ~12 MiB RAM at start |
+| Empty process | ~15 MB RSS, 0% CPU |
+| **2,000 tenants, 10,000 agents, 6,000 triggers, idle** | **35 MB RSS**, ~0% CPU |
+| 20,000 runs across all 2,000 tenants (all runtimes loaded) | 1,840 runs/s, 72 MB RSS (~18 KB per loaded tenant) |
+| Single tenant, 10,000 runs (2 LLM calls + 1 tool each) | ~1,400 runs/s, 43 MB peak, ~0.4 ms CPU/run |
+| Idle with 6,000 active triggers (~5 scheduled runs/s) | ~1% of one CPU core |
+| Postgres per agent definition (row + index) | ~350 bytes (10,000 agents: 3.5 MB) |
+| Postgres per stored session (short chat) | ~1.1 KB, expires after `session_ttl` |
+
+In production, the LLM is the bottleneck, not agentd.
+
+<details>
+<summary><b>Claude specifics</b></summary>
+
+- The default model is `claude-opus-5`.
+- Assistant turns are replayed byte for byte (including thinking blocks), so
+  multi-step tool loops stay valid.
+- Server-side refusal fallbacks are on by default (`fallbacks: default`). Set
+  `fallbacks: off` on the provider to disable them, for example behind a
+  proxy that rejects the parameter.
+- `effort` maps to `output_config.effort`.
+
+</details>
 
 ## Development
 
@@ -325,17 +461,31 @@ make race    # with the race detector
 make lint
 ```
 
-Layout: `internal/llm` (providers), `internal/mcp` (client + server),
-`internal/mail` (IMAP, SMTP, MIME), `internal/tools` (connectors),
-`internal/agent` (loop, sessions), `internal/triggers` (heap scheduler,
-cron, IMAP), `internal/tenant` (runtime cache, quotas, secrets, auth),
-`internal/store` (memory/file and Postgres), `internal/netguard` (SSRF
-guard), `internal/server` (HTTP, SSE, OpenAI, MCP, webhooks, tenant and
-admin API; the web UI in `internal/server/ui`), `internal/config`.
-
-Postgres tests run when `AR_TEST_DATABASE_URL` is set:
+The Postgres tests run when `AR_TEST_DATABASE_URL` is set:
 
 ```bash
 docker run -d --rm --name ar-pg -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17-alpine
 AR_TEST_DATABASE_URL="postgres://postgres:test@localhost:55432/postgres?sslmode=disable" make race
 ```
+
+| Package | What's inside |
+|---|---|
+| `internal/llm` | providers |
+| `internal/mcp` | MCP client + server |
+| `internal/mail` | IMAP, SMTP, MIME |
+| `internal/tools` | connectors |
+| `internal/agent` | agent loop, sessions |
+| `internal/triggers` | heap scheduler, cron, IMAP polling |
+| `internal/tenant` | runtime cache, quotas, secrets, auth |
+| `internal/store` | memory/file and Postgres stores |
+| `internal/netguard` | SSRF guard |
+| `internal/server` | HTTP, SSE, OpenAI, MCP, webhooks, tenant and admin API, web UI (`internal/server/ui`) |
+| `internal/config` | config loading and validation |
+
+Contributions are welcome. Please open an issue first for larger changes.
+
+## License
+
+Copyright 2026 Get IT Done GmbH.
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
