@@ -61,6 +61,11 @@ type ExternalAuthConfig struct {
 	PlanMap map[string]string `yaml:"plan_map"`
 	// TenantPrefix is prepended to user ids (default "ext-").
 	TenantPrefix string `yaml:"tenant_prefix"`
+	// RequireField (dot path) must be true in the userinfo response, e.g.
+	// "admin" to let only the IdP's admins in while a rollout is not ready
+	// for everyone. Others are refused as unauthorized, and no tenant is
+	// created for them.
+	RequireField string `yaml:"require_field"`
 }
 
 // IDFieldOrDefault returns the id field path.

@@ -157,6 +157,7 @@ type userinfoEntry struct {
 
 type externalUser struct {
 	ID, Name, Plan string
+	Allowed        bool // require_field is true (or not configured)
 }
 
 func newUserinfoAuth(cfg config.ExternalAuthConfig) *userinfoAuth {
@@ -218,6 +219,7 @@ func (a *userinfoAuth) lookup(ctx context.Context, token string) (*externalUser,
 		return nil, fmt.Errorf("external auth: invalid userinfo response")
 	}
 	u := externalUser{ID: field(doc, a.cfg.IDFieldOrDefault()), Plan: field(doc, a.cfg.PlanField)}
+	u.Allowed = a.cfg.RequireField == "" || field(doc, a.cfg.RequireField) == "true"
 	for _, f := range []string{a.cfg.NameField, "name", "email", "preferred_username"} {
 		if u.Name = field(doc, f); u.Name != "" {
 			break
@@ -242,6 +244,9 @@ func (m *Manager) externalTenant(ctx context.Context, token string) (string, err
 	u, err := m.external.lookup(ctx, token)
 	if err != nil {
 		return "", err
+	}
+	if !u.Allowed {
+		return "", ErrUnauthorized
 	}
 	cfg := m.cfg.Tenancy.ExternalAuth
 	id := cfg.PrefixOrDefault() + u.ID
