@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS ar_keys (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ar_keys_tenant ON ar_keys(tenant_id);
+ALTER TABLE ar_keys ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'admin';
+ALTER TABLE ar_keys ADD COLUMN IF NOT EXISTS agents text[] NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS ar_resources (
   tenant_id text NOT NULL REFERENCES ar_tenants(id) ON DELETE CASCADE,
   kind text NOT NULL,
@@ -291,8 +293,8 @@ func (p *Postgres) TenantVersions(ctx context.Context) (map[string]int64, error)
 }
 
 func (p *Postgres) CreateKey(ctx context.Context, k APIKey) error {
-	_, err := p.db.ExecContext(ctx, `INSERT INTO ar_keys (id, tenant_id, name, hash, prefix) VALUES ($1,$2,$3,$4,$5)`,
-		k.ID, k.TenantID, k.Name, k.Hash, k.Prefix)
+	_, err := p.db.ExecContext(ctx, `INSERT INTO ar_keys (id, tenant_id, name, hash, prefix, scope, agents) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		k.ID, k.TenantID, k.Name, k.Hash, k.Prefix, keyScope(k.Scope), pq.Array(nonNil(k.Agents)))
 	if isFK(err) {
 		return ErrNotFound
 	}
@@ -304,8 +306,8 @@ func (p *Postgres) CreateKey(ctx context.Context, k APIKey) error {
 
 func (p *Postgres) KeyByHash(ctx context.Context, hash string) (*APIKey, error) {
 	var k APIKey
-	err := p.db.QueryRowContext(ctx, `SELECT id, tenant_id, name, hash, prefix, created_at FROM ar_keys WHERE hash=$1`, hash).
-		Scan(&k.ID, &k.TenantID, &k.Name, &k.Hash, &k.Prefix, &k.CreatedAt)
+	err := p.db.QueryRowContext(ctx, `SELECT id, tenant_id, name, hash, prefix, scope, agents, created_at FROM ar_keys WHERE hash=$1`, hash).
+		Scan(&k.ID, &k.TenantID, &k.Name, &k.Hash, &k.Prefix, &k.Scope, pq.Array(&k.Agents), &k.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -313,7 +315,7 @@ func (p *Postgres) KeyByHash(ctx context.Context, hash string) (*APIKey, error) 
 }
 
 func (p *Postgres) ListKeys(ctx context.Context, tenant string) ([]APIKey, error) {
-	rows, err := p.db.QueryContext(ctx, `SELECT id, tenant_id, name, hash, prefix, created_at FROM ar_keys WHERE tenant_id=$1 ORDER BY created_at`, tenant)
+	rows, err := p.db.QueryContext(ctx, `SELECT id, tenant_id, name, hash, prefix, scope, agents, created_at FROM ar_keys WHERE tenant_id=$1 ORDER BY created_at`, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +323,7 @@ func (p *Postgres) ListKeys(ctx context.Context, tenant string) ([]APIKey, error
 	var out []APIKey
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.TenantID, &k.Name, &k.Hash, &k.Prefix, &k.CreatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.TenantID, &k.Name, &k.Hash, &k.Prefix, &k.Scope, pq.Array(&k.Agents), &k.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, k)

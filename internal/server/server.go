@@ -46,7 +46,30 @@ type ctxKey int
 const (
 	keyTenant ctxKey = iota
 	keyAdmin
+	keyPrincipal
 )
+
+// principalOf is the token's scope; requests without one (admin token,
+// webhooks, auth disabled) are unrestricted.
+func principalOf(ctx context.Context) tenant.Principal {
+	p, ok := ctx.Value(keyPrincipal).(tenant.Principal)
+	if !ok {
+		return tenant.Principal{Scope: store.ScopeAdmin}
+	}
+	return p
+}
+
+// runRoutes are the only routes a ScopeRun key may use: running agents,
+// never reading or changing configuration, secrets or keys.
+var runRoutes = map[string]bool{
+	"GET /v1/agents":                         true,
+	"GET /v1/agents/{name}":                  true,
+	"POST /v1/agents/{name}/run":             true,
+	"DELETE /v1/agents/{name}/sessions/{id}": true,
+	"GET /v1/models":                         true,
+	"POST /v1/chat/completions":              true,
+	"/mcp":                                   true,
+}
 
 func tenantOf(r *http.Request) string {
 	id, _ := r.Context().Value(keyTenant).(string)
@@ -76,6 +99,7 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 	h("GET /v1/agents/{name}", s.getAgent)
 	h("POST /v1/agents/{name}/run", s.runAgent)
 	h("DELETE /v1/agents/{name}/sessions/{id}", s.deleteSession)
+	h("GET /v1/tools", s.listTools)
 	mux.HandleFunc("POST /v1/hooks/{name}", s.webhook)
 	mux.HandleFunc("POST /v1/hooks/{name}/{hook}", s.webhook)
 	mux.HandleFunc("POST /v1/tenants/{tenant}/hooks/{name}", s.webhook)
@@ -160,24 +184,24 @@ func (s *Server) isAdminToken(tok string) bool {
 // resolve authenticates the request: admin tokens act on the system tenant
 // (or the tenant named in X-Tenant); other tokens are tenant keys or external
 // (OIDC userinfo) tokens.
-func (s *Server) resolve(r *http.Request) (string, bool, error) {
+func (s *Server) resolve(r *http.Request) (tenant.Principal, bool, error) {
 	tok := bearer(r)
 	if len(s.tokens) == 0 && !s.m.Enabled() {
-		return tenant.System, true, nil // auth disabled (warned at startup)
+		return tenant.Principal{Tenant: tenant.System, Scope: store.ScopeAdmin}, true, nil // auth disabled (warned at startup)
 	}
 	if tok != "" && s.isAdminToken(tok) {
 		if t := r.Header.Get("X-Tenant"); t != "" {
-			return t, true, nil
+			return tenant.Principal{Tenant: t, Scope: store.ScopeAdmin}, true, nil
 		}
-		return tenant.System, true, nil
+		return tenant.Principal{Tenant: tenant.System, Scope: store.ScopeAdmin}, true, nil
 	}
-	id, err := s.m.Authenticate(r.Context(), tok)
-	return id, false, err
+	p, err := s.m.Resolve(r.Context(), tok)
+	return p, false, err
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, admin, err := s.resolve(r)
+		p, admin, err := s.resolve(r)
 		if err != nil {
 			if !errors.Is(err, tenant.ErrUnauthorized) {
 				slog.Warn("authentication failed", "path", r.URL.Path, "err", err)
@@ -188,8 +212,13 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		ctx := context.WithValue(r.Context(), keyTenant, id)
+		if p.Scope == store.ScopeRun && !runRoutes[r.Pattern] {
+			writeError(w, http.StatusForbidden, "this key may only run agents")
+			return
+		}
+		ctx := context.WithValue(r.Context(), keyTenant, p.Tenant)
 		ctx = context.WithValue(ctx, keyAdmin, admin)
+		ctx = context.WithValue(ctx, keyPrincipal, p)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -211,6 +240,8 @@ func fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &ve):
 		writeError(w, http.StatusUnprocessableEntity, ve.Msg)
+	case errors.Is(err, tenant.ErrInvalidKey):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrFileQuota):
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.Is(err, store.ErrNotFound):
@@ -245,7 +276,7 @@ func (s *Server) exposedAgent(ctx context.Context, id, name string) (*agent.Agen
 	}
 	defer release()
 	ag, ok := a.Agents[name]
-	if !ok || !ag.Config().Exposed() {
+	if !ok || !ag.Config().Exposed() || !principalOf(ctx).MayRun(name) {
 		return nil, store.ErrNotFound
 	}
 	return ag, nil
@@ -269,10 +300,12 @@ func info(ag *agent.Agent) agentInfo {
 	return i
 }
 
-func exposedSorted(a *app.App) []*agent.Agent {
+// exposedSorted lists the exposed agents the caller's key may run.
+func exposedSorted(ctx context.Context, a *app.App) []*agent.Agent {
+	p := principalOf(ctx)
 	var out []*agent.Agent
 	for _, ag := range a.Agents {
-		if ag.Config().Exposed() {
+		if ag.Config().Exposed() && p.MayRun(ag.Config().Name) {
 			out = append(out, ag)
 		}
 	}
@@ -288,7 +321,7 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	list := []agentInfo{}
-	for _, ag := range exposedSorted(a) {
+	for _, ag := range exposedSorted(r.Context(), a) {
 		i := info(ag)
 		for _, t := range a.Config.Agents[ag.Config().Name].Triggers {
 			i.Triggers = append(i.Triggers, t.Type)
@@ -305,6 +338,64 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, info(ag))
+}
+
+type toolInfo struct {
+	ID          string `json:"id"` // <connector>.<tool>, the form agents' tools patterns match
+	Description string `json:"description,omitempty"`
+}
+
+type connectorTools struct {
+	Name   string     `json:"name"`
+	Type   string     `json:"type"`
+	Status string     `json:"status"` // ok or unavailable
+	Error  string     `json:"error,omitempty"`
+	Tools  []toolInfo `json:"tools"`
+}
+
+// listTools shows, per connector, the tools agents can select, and which
+// connectors failed to start (tenants' connectors are optional, so a typo in
+// a password would otherwise only show up as an agent without tools).
+func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
+	a, release, err := s.m.Acquire(r.Context(), tenantOf(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer release()
+	byName := map[string]*connectorTools{}
+	for _, t := range a.Registry.All() {
+		c := byName[t.Connector]
+		if c == nil {
+			typ := "builtin"
+			if cc, ok := a.Config.Connectors[t.Connector]; ok {
+				typ = cc.Type
+			}
+			c = &connectorTools{Name: t.Connector, Type: typ, Status: "ok", Tools: []toolInfo{}}
+			byName[t.Connector] = c
+		}
+		c.Tools = append(c.Tools, toolInfo{ID: t.Connector + "." + t.Local, Description: t.Description})
+	}
+	for name, cc := range a.Config.Connectors {
+		if _, ok := byName[name]; ok {
+			continue
+		}
+		c := &connectorTools{Name: name, Type: cc.Type, Status: "ok", Tools: []toolInfo{}}
+		if msg, failed := a.Failed[name]; failed {
+			// Remote servers answer with whole HTML pages; the start is enough.
+			if r := []rune(msg); len(r) > 300 {
+				msg = string(r[:300]) + "…"
+			}
+			c.Status, c.Error = "unavailable", msg
+		}
+		byName[name] = c
+	}
+	out := make([]*connectorTools, 0, len(byName))
+	for _, c := range byName {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	writeJSON(w, http.StatusOK, map[string]any{"connectors": out})
 }
 
 type runRequest struct {
@@ -407,7 +498,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if _, ok := a.Agents[r.PathValue("name")]; !ok {
+	if _, ok := a.Agents[r.PathValue("name")]; !ok || !principalOf(r.Context()).MayRun(r.PathValue("name")) {
 		fail(w, store.ErrNotFound)
 		return
 	}
@@ -530,7 +621,7 @@ func (s *Server) mcpTools(ctx context.Context, id string) []mcp.ServerTool {
 	}
 	defer release()
 	var out []mcp.ServerTool
-	for _, ag := range exposedSorted(a) {
+	for _, ag := range exposedSorted(ctx, a) {
 		name := ag.Config().Name
 		desc := ag.Config().Description
 		if desc == "" {

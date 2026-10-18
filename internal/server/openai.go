@@ -23,7 +23,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	data := []map[string]any{}
-	for _, ag := range exposedSorted(a) {
+	for _, ag := range exposedSorted(r.Context(), a) {
 		data = append(data, map[string]any{"id": ag.Config().Name, "object": "model", "owned_by": "agentd", "created": 0})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
