@@ -12,8 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 )
 
 // Config is the root configuration document.

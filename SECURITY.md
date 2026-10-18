@@ -1,16 +1,16 @@
 # Security policy
 
-agentd runs agents of many users in one process, so we take isolation bugs
+agent-fabrik runs agents of many users in one process, so we take isolation bugs
 seriously: tenant escapes, SSRF guard bypasses, secret leaks, auth bypasses
 and anything that lets one tenant affect another.
 
 ## Reporting a vulnerability
 
 Please **do not open a public issue.** Report it privately through
-[GitHub's private vulnerability reporting](https://github.com/getitdone-gmbh/agentd/security/advisories/new).
+[GitHub's private vulnerability reporting](https://github.com/getitdone-gmbh/agent-fabrik/security/advisories/new).
 
 Include what you found, how to reproduce it (config, requests) and the
-version (`agentd -version`). We confirm receipt within 3 working days, keep
+version (`fabrik -version`). We confirm receipt within 3 working days, keep
 you updated, and credit you in the advisory unless you prefer otherwise.
 
 ## Supported versions
@@ -20,7 +20,7 @@ versions.
 
 ## Scope
 
-In scope: the agentd binary, its HTTP APIs, the web UI, the container image
+In scope: the agent-fabrik binary, its HTTP APIs, the web UI, the container image
 and the example deployments in this repository.
 
 Out of scope: what a model decides to do with the tools you give it (an

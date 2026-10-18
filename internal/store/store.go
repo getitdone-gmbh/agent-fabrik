@@ -10,8 +10,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
 )
 
 var (

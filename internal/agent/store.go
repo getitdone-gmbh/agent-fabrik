@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 )
 
 // Store persists conversation history per agent and session.

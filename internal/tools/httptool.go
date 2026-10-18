@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/netguard"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/netguard"
 )
 
 // HTTPConfig configures an HTTP connector. It can expose declared endpoints
@@ -361,7 +361,7 @@ func (c *HTTPConnector) do(ctx context.Context, client *http.Client, method, u s
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "agentd/1")
+	req.Header.Set("User-Agent", "agent-fabrik/1")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

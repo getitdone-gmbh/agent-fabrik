@@ -1,4 +1,4 @@
-// agentd web UI: a small single-page app on top of the /v1 API. No build
+// agent-fabrik web UI: a small single-page app on top of the /v1 API. No build
 // step, no dependencies. Server data is only ever inserted as text
 // (textContent), never as HTML.
 "use strict";
@@ -21,8 +21,8 @@ const store = {
 };
 
 const S = {
-  token: store.get("agentd.token") || "",
-  actAs: store.get("agentd.tenant") || "",
+  token: store.get("fabrik.token") || "",
+  actAs: store.get("fabrik.tenant") || "",
   me: null,        // GET /v1/me (multi-tenant only)
   tenancy: false,  // multi-tenant mode
   admin: false,
@@ -109,13 +109,13 @@ async function api(method, path, body, opts = {}) {
 
 async function signIn(token, remember) {
   S.token = token;
-  if (token) store.set("agentd.token", token, remember);
+  if (token) store.set("fabrik.token", token, remember);
   await boot();
 }
 
 function signOut(msg) {
   S.token = ""; S.actAs = ""; S.me = null; S.admin = false; S.tenancy = false;
-  store.del("agentd.token"); store.del("agentd.tenant");
+  store.del("fabrik.token"); store.del("fabrik.tenant");
   showLogin(msg);
 }
 
@@ -145,7 +145,7 @@ async function boot() {
   let ok;
   try { ok = await detect(); } catch (e) {
     if (S.actAs) { // the tenant we acted as may be gone
-      S.actAs = ""; store.del("agentd.tenant");
+      S.actAs = ""; store.del("fabrik.tenant");
       return boot();
     }
     showLogin("Cannot reach the runtime: " + e.message);
@@ -916,7 +916,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#logout").addEventListener("click", () => signOut());
   $("#tenant-switch").addEventListener("change", async (e) => {
     S.actAs = e.target.value;
-    if (S.actAs) store.set("agentd.tenant", S.actAs); else store.del("agentd.tenant");
+    if (S.actAs) store.set("fabrik.tenant", S.actAs); else store.del("fabrik.tenant");
     await boot();
     if (location.hash.startsWith("#/agents/")) go("#/agents");
   });

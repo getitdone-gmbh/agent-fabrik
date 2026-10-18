@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/getitdone-gmbh/agentd/internal/mail"
-	"github.com/getitdone-gmbh/agentd/internal/testutil"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/mail"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/testutil"
 )
 
 const multipartMsg = `From: =?utf-8?q?J=C3=BCrgen?= <juergen@example.com>

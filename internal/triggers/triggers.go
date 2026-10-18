@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	imail "github.com/getitdone-gmbh/agentd/internal/mail"
-	"github.com/getitdone-gmbh/agentd/internal/metrics"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	imail "github.com/getitdone-gmbh/agent-fabrik/internal/mail"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/metrics"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
 )
 
 // NoReply is the answer an agent gives to suppress an email reply.

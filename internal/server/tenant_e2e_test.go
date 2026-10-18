@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/getitdone-gmbh/agentd/internal/testutil"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/testutil"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/server"
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tenant"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/server"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tenant"
 )
 
 // recorder wraps the fake LLM and records auth headers and prompts.

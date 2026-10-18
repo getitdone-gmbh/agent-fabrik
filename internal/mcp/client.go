@@ -124,7 +124,7 @@ type Client struct {
 }
 
 // ClientInfo identifies this runtime to servers.
-var ClientInfo = map[string]string{"name": "agentd", "version": "1.0.0"}
+var ClientInfo = map[string]string{"name": "agent-fabrik", "version": "1.0.0"}
 
 func (c *Client) call(ctx context.Context, method string, params any, out any) error {
 	res, err := c.t.call(ctx, c.nextID.Add(1), method, params)

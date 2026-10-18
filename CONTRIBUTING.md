@@ -10,7 +10,7 @@ the code.
 You need Go 1.25. Nothing else; Postgres is optional.
 
 ```bash
-make build   # bin/agentd
+make build   # bin/fabrik
 make test    # unit + end-to-end tests with fake LLM, MCP, IMAP and SMTP servers
 make race    # the same with the race detector
 make lint    # gofmt + go vet
@@ -21,7 +21,7 @@ README under *Development*.
 
 ## Guidelines
 
-- **Keep it small.** agentd has two dependencies (`yaml.v3`, `lib/pq`) and
+- **Keep it small.** agent-fabrik has two dependencies (`yaml.v3`, `lib/pq`) and
   we'd like to keep it that way. Protocols are implemented on the standard
   library.
 - **Multi-tenancy first.** Anything a tenant can configure must be safe when

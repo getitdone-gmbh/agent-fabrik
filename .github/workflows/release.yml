@@ -32,4 +32,4 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           pre=""; case "$TAG" in *-*) pre="--prerelease";; esac
-          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS $pre --verify-tag --generate-notes --title "agentd $TAG"
+          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS $pre --verify-tag --generate-notes --title "agent-fabrik $TAG"

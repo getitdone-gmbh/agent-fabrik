@@ -1,12 +1,12 @@
 # Single owner on your own machine (e.g. a Linux box for local AI) with an
-# agent that may run commands. Never combine with tenancy: agentd refuses
+# agent that may run commands. Never combine with tenancy: agent-fabrik refuses
 # a shell connector when tenancy.enabled is true.
 #
 #   mkdir -p ~/agent-work && export AGENT_WORKDIR=~/agent-work
 #   export AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24)
-#   ./bin/agentd -config examples/homelab.yaml
+#   ./bin/fabrik -config examples/homelab.yaml
 #
-# Run agentd as its own unprivileged user: commands run with its rights.
+# Run agent-fabrik as its own unprivileged user: commands run with its rights.
 server:
   addr: "127.0.0.1:${PORT:-8080}"   # local only; put a reverse proxy in front for more
   auth_token: ${AGENT_RUNTIME_TOKEN:?set AGENT_RUNTIME_TOKEN}
@@ -25,7 +25,7 @@ connectors:
     timeout_seconds: 120
     # max_output: 32768           # bytes per stream (stdout, stderr)
     # shell: /bin/bash            # default: bash, else /bin/sh
-    # inherit_env: false          # true passes agentd's env (API keys!) on
+    # inherit_env: false          # true passes agent-fabrik's env (API keys!) on
     # env: {GIT_AUTHOR_NAME: agent}
     deny: ["sudo *", "*rm -rf /*", "*shutdown*", "*reboot*"]
 

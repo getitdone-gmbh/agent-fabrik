@@ -5,12 +5,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /agentd .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /fabrik .
 
 # ~2 MB base with CA certificates and tzdata, runs as non-root.
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /agentd /agentd
+COPY --from=build /fabrik /fabrik
 # Soft heap limit keeps RSS small; raise it for many concurrent runs.
 ENV GOMEMLIMIT=48MiB
 EXPOSE 8080
-ENTRYPOINT ["/agentd"]
+ENTRYPOINT ["/fabrik"]

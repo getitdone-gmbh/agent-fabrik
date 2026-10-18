@@ -14,9 +14,9 @@ import (
 
 	"github.com/lib/pq"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 )
 
 // Postgres stores everything in PostgreSQL, so several replicas can share

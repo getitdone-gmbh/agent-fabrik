@@ -1,8 +1,8 @@
-<h1 align="center">agentd</h1>
+<h1 align="center">agent-fabrik</h1>
 
 <p align="center">
-  <b>Agents are rows, not pods.</b><br>
-  A tiny, single-binary runtime that runs the LLM agents of thousands of users in one process.
+  <b>A factory floor for AI agents.</b><br>
+  Thousands of agents of thousands of users at work around the clock, in one tiny process.
 </p>
 
 <p align="center">
@@ -19,9 +19,12 @@ agents *for other people* is a different problem: every user wants their own
 agents, keys, tools, schedules and limits, and you don't want a container per
 agent sitting idle at 3 a.m.
 
-**agentd** is that hosting layer. You define agents in YAML (or let your users
-do it over an API). Then you run them over HTTP, the OpenAI API, MCP,
-webhooks, cron or email. An idle agent costs ~350 bytes in Postgres. 2,000
+**agent-fabrik** is that hosting layer. *Fabrik* is German for factory: one
+hall, many robots, each doing its own job around the clock. You define agents
+in YAML (or let your users do it over an API). Then you run them over HTTP,
+the OpenAI API, MCP, webhooks, cron or email.
+
+Agents are rows, not pods: an idle agent costs ~350 bytes in Postgres. 2,000
 tenants with 10,000 agents and 6,000 triggers idle at **35 MB of RAM**.
 
 - 🪶 **Small.** ~9 MB static binary, ~19 MB distroless image. Two dependencies
@@ -58,7 +61,7 @@ tenants with 10,000 agents and 6,000 triggers idle at **35 MB of RAM**.
 No API key needed if you have [Ollama](https://ollama.com) running locally:
 
 ```bash
-git clone https://github.com/getitdone-gmbh/agentd && cd agentd
+git clone https://github.com/getitdone-gmbh/agent-fabrik && cd agent-fabrik
 make build
 
 cat > agents.yaml <<'YAML'
@@ -70,16 +73,16 @@ agents:
     tools: ["system.*"]
 YAML
 
-./bin/agentd -run helper -input "What time is it in Tokyo right now?"
+./bin/fabrik -run helper -input "What time is it in Tokyo right now?"
 # → It is currently 1:32 PM on Friday, October 2, 2026, in Tokyo.
 ```
 
 The agent called its `system__now` tool to answer. Now serve it:
 
 ```bash
-./bin/agentd -chat helper     # chat in the terminal
-./bin/agentd                  # serve on :8080, web UI at http://localhost:8080
-./bin/agentd -check           # validate the config and list every tool
+./bin/fabrik -chat helper     # chat in the terminal
+./bin/fabrik                  # serve on :8080, web UI at http://localhost:8080
+./bin/fabrik -check           # validate the config and list every tool
 ```
 
 Prefer a hosted model? Swap the provider:
@@ -104,7 +107,7 @@ providers:
                      Gemini · OpenRouter · DeepSeek · vLLM · ...       └─ files (per tenant)
 ```
 
-**Providers.** agentd has a native Anthropic Messages API client (Claude) and
+**Providers.** agent-fabrik has a native Anthropic Messages API client (Claude) and
 a native Ollama `/api/chat` client. An OpenAI-compatible adapter has presets
 for `openai`, `mistral`, `groq`, `openrouter`, `gemini`, `deepseek`,
 `together`, `scaleway`, `ionos`, `xai`, `lmstudio`, `vllm` and Azure OpenAI.
@@ -141,7 +144,7 @@ and `${file:/run/secrets/key}`. They are expanded **after** YAML parsing, so a
 secret may contain any character without breaking the document. `$${` gives a
 literal `${`.
 
-Without `-config`, agentd looks for a config in this order:
+Without `-config`, agent-fabrik looks for a config in this order:
 
 1. `$AGENT_CONFIG`
 2. inline YAML in `$AGENT_CONFIG_YAML`
@@ -177,7 +180,7 @@ curl $RT/v1/agents/support/run -H "Authorization: Bearer $KEY" -d '{"input":"hi"
 
 **Tenants** are created by the admin or automatically for the users of your
 identity provider or platform (`tenancy.external_auth`). Users sign in with
-the token they already have (a JWT or an API key). agentd checks it against
+the token they already have (a JWT or an API key). agent-fabrik checks it against
 a userinfo endpoint: the OIDC `/userinfo` of Keycloak, Zitadel, Auth0 or
 Google, or any "who am I" API. Each user becomes a tenant (`ext-<id>`), and
 the plan can come from a claim (`plan_field`, `plan_map`). With
@@ -264,7 +267,7 @@ build step and no third-party code. It calls the same `/v1` API and is served
 with a strict Content-Security-Policy. Without tenancy, the UI can list and
 chat with the config-file agents but cannot change them.
 
-Running agentd behind your own dashboard? Turn the UI off with `server.ui: false`.
+Running agent-fabrik behind your own dashboard? Turn the UI off with `server.ui: false`.
 
 ## API
 
@@ -276,7 +279,7 @@ All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>` (or
 - an external token, validated against your userinfo endpoint.
 
 > [!WARNING]
-> If no token is configured and tenancy is off, the API is open. agentd then
+> If no token is configured and tenancy is off, the API is open. agent-fabrik then
 > listens on loopback only (`:8080` becomes `127.0.0.1:8080`) and refuses to
 > start on any other address. Set `AGENT_RUNTIME_TOKEN` to serve the network.
 
@@ -363,14 +366,14 @@ agents:
   arguments. Programs that start others (`env`, `xargs`, `find -exec`,
   `git -c`) reopen the door, so keep them off the list when that matters.
 - **Environment.** Commands get only `PATH`, `HOME`, `USER`, `LANG`, `TZ`
-  and friends plus `env`; agentd's own API keys and tokens stay out unless
+  and friends plus `env`; agent-fabrik's own API keys and tokens stay out unless
   `inherit_env: true`.
 - **Limits.** Per command `timeout_seconds` and `max_output` bytes per
   stream; set the agent's `tool_timeout_seconds` above the connector timeout.
-- **Not a sandbox.** Commands run with agentd's user rights. Run agentd as
+- **Not a sandbox.** Commands run with agent-fabrik's user rights. Run agent-fabrik as
   a dedicated unprivileged user, or in a container or VM, when the machine
   matters.
-- **Never multi-tenant.** agentd refuses the connector when
+- **Never multi-tenant.** agent-fabrik refuses the connector when
   `tenancy.enabled` is true (a child can read the parent's environment via
   `/proc`) and refuses it in every tenant document regardless of plan.
 
@@ -392,7 +395,7 @@ agents:
 ```
 
 The `imap` trigger polls the mailbox (by default every minute). For each
-unread message, agentd:
+unread message, agent-fabrik:
 
 1. runs the agent with the sender, subject and plain-text body;
 2. sends the answer as a threaded reply (`In-Reply-To`, `References`,
@@ -417,12 +420,12 @@ mail, and set `allow_recipients` when it may send email.
 
 **Binaries.** Every tag `v*` publishes static binaries for Linux and macOS
 (`amd64`, `arm64`) with `SHA256SUMS` on the
-[releases page](https://github.com/getitdone-gmbh/agentd/releases):
+[releases page](https://github.com/getitdone-gmbh/agent-fabrik/releases):
 
 ```bash
-gh release download -R getitdone-gmbh/agentd -p '*linux_arm64*' -p SHA256SUMS
+gh release download -R getitdone-gmbh/agent-fabrik -p '*linux_arm64*' -p SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
-tar xzf agentd_*_linux_arm64.tar.gz && ./agentd_*_linux_arm64/agentd -version
+tar xzf agent-fabrik_*_linux_arm64.tar.gz && ./agent-fabrik_*_linux_arm64/fabrik -version
 ```
 
 Everything can be configured with env vars (see [`agents.yaml`](agents.yaml)).
@@ -430,7 +433,7 @@ Everything can be configured with env vars (see [`agents.yaml`](agents.yaml)).
 | Target | File |
 |---|---|
 | Docker Compose (runtime + Postgres) | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml), `make up` |
-| Kubernetes (2 replicas, hardened pod) | [`deploy/kubernetes/agentd.yaml`](deploy/kubernetes/agentd.yaml) |
+| Kubernetes (2 replicas, hardened pod) | [`deploy/kubernetes/agent-fabrik.yaml`](deploy/kubernetes/agent-fabrik.yaml) |
 | Cloud Native Buildpacks (`pack`, kpack, Heroku-style PaaS) | `go.mod` at the root + [`project.toml`](project.toml); listens on `$PORT` |
 | ITDone Cloud | [`deploy/itdone/itdone.yaml`](deploy/itdone/itdone.yaml) |
 
@@ -454,7 +457,7 @@ you run many concurrent agents with large contexts.
 
 ## Security
 
-agentd runs other people's agents next to each other, so isolation is part of
+agent-fabrik runs other people's agents next to each other, so isolation is part of
 the core.
 
 - **Secrets** are encrypted with AES-256-GCM (`tenancy.secret_key`), bound to
@@ -498,7 +501,7 @@ Measured on an Apple M-series machine with a fake LLM and real Postgres:
 | Postgres per agent definition (row + index) | ~350 bytes (10,000 agents: 3.5 MB) |
 | Postgres per stored session (short chat) | ~1.1 KB, expires after `session_ttl` |
 
-In production, the LLM is the bottleneck, not agentd.
+In production, the LLM is the bottleneck, not agent-fabrik.
 
 <details>
 <summary><b>Claude specifics</b></summary>

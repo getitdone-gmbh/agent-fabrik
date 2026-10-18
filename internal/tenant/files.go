@@ -3,8 +3,8 @@ package tenant
 import (
 	"context"
 
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
 )
 
 // Files is one tenant's file storage with its plan quota applied. The agent

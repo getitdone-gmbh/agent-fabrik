@@ -396,7 +396,7 @@ func (c *IMAPClient) FetchSummaries(uids []uint32) ([]Summary, error) {
 
 // fetchSlots bounds how many full messages are held and decoded at once
 // per process. A raw message and its decoded parts are the largest buffers
-// agentd holds, and every tenant's triggers and tools may fetch in parallel.
+// agent-fabrik holds, and every tenant's triggers and tools may fetch in parallel.
 var fetchSlots = make(chan struct{}, 4)
 
 // FetchEmail fetches and parses one message without setting \Seen. A

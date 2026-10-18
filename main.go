@@ -1,4 +1,4 @@
-// Command agentd is a small, multi-tenant agent runtime: a daemon that runs LLM
+// Command fabrik (agent-fabrik) is a small, multi-tenant agent runtime: a daemon that runs LLM
 // agents with tools from MCP, HTTP, SMTP and IMAP connectors, triggered via
 // HTTP, MCP, webhooks, schedules or incoming email.
 package main
@@ -20,12 +20,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/app"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/server"
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tenant"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/app"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/server"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tenant"
 )
 
 var version = "dev"
@@ -39,7 +39,7 @@ var defaultConfig []byte
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "agentd:", err)
+		fmt.Fprintln(os.Stderr, "fabrik:", err)
 		os.Exit(1)
 	}
 }

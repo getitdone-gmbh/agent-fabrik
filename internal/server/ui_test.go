@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/server"
-	"github.com/getitdone-gmbh/agentd/internal/tenant"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/server"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tenant"
 )
 
 func TestUI(t *testing.T) {
@@ -28,7 +28,7 @@ func TestUI(t *testing.T) {
 	}
 
 	// The page is public (it holds no data); the API behind it is not.
-	for path, want := range map[string]string{"/ui/": "<title>agentd</title>", "/ui/app.js": "streamRun", "/ui/app.css": "--accent"} {
+	for path, want := range map[string]string{"/ui/": "<title>agent-fabrik</title>", "/ui/app.js": "streamRun", "/ui/app.css": "--accent"} {
 		resp, body := e.do(t, "GET", path, "", nil)
 		if resp.StatusCode != 200 || !strings.Contains(body, want) {
 			t.Fatalf("%s = %d, missing %q", path, resp.StatusCode, want)

@@ -1,4 +1,4 @@
-# Full reference configuration for agentd.
+# Full reference configuration for agent-fabrik.
 # Values like ${VAR}, ${VAR:-default}, ${VAR:?error} and ${file:/path} are
 # expanded from the environment (after YAML parsing, so secrets can contain
 # any characters). Use "$${" for a literal "${".

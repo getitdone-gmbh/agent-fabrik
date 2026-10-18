@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// ShellConfig configures a shell connector: commands on the machine agentd
+// ShellConfig configures a shell connector: commands on the machine agent-fabrik
 // runs on. It is meant for a single owner's own machine and is refused in
 // multi-tenant mode, where all tenants share one process.
 //
@@ -32,7 +32,7 @@ type ShellConfig struct {
 	Allow      []string          `yaml:"allow"`           // program globs, e.g. [git, ls, "python3*"]
 	Deny       []string          `yaml:"deny"`            // command-line globs, e.g. ["sudo *", "*rm -rf /*"]
 	Env        map[string]string `yaml:"env"`             // extra variables
-	InheritEnv bool              `yaml:"inherit_env"`     // pass agentd's environment (API keys!) on
+	InheritEnv bool              `yaml:"inherit_env"`     // pass agent-fabrik's environment (API keys!) on
 }
 
 // ShellConnector implements Connector for local commands.
@@ -217,7 +217,7 @@ func (c *ShellConnector) allowed(prog string) bool {
 	return false
 }
 
-// env is minimal by default so agentd's own secrets (LLM keys, runtime
+// env is minimal by default so agent-fabrik's own secrets (LLM keys, runtime
 // token) do not reach commands the model chooses.
 func (c *ShellConnector) env() []string {
 	var env []string

@@ -1,4 +1,4 @@
-module github.com/getitdone-gmbh/agentd
+module github.com/getitdone-gmbh/agent-fabrik
 
 go 1.25.0
 

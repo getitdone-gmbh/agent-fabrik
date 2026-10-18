@@ -3,7 +3,7 @@
 # docker-compose setup (Postgres) or tenancy.store.type: file.
 #
 #   export MISTRAL_API_KEY=...   AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24)
-#   ./bin/agentd -config examples/local.yaml
+#   ./bin/fabrik -config examples/local.yaml
 server:
   addr: ":${PORT:-8080}"
   auth_token: ${AGENT_RUNTIME_TOKEN:?set AGENT_RUNTIME_TOKEN (admin token)}

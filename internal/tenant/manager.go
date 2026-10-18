@@ -17,14 +17,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/app"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
-	"github.com/getitdone-gmbh/agentd/internal/netguard"
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
-	"github.com/getitdone-gmbh/agentd/internal/triggers"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/app"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/netguard"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/triggers"
 )
 
 // System is the tenant id of the agents defined in the config file.
