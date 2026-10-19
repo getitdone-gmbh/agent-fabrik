@@ -134,7 +134,7 @@ func TestStdioClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewStdioClient([]string{exe, "-test.run=^$"}, map[string]string{"MCP_STDIO_SERVER": "1"}, "", nil)
+	c, err := NewStdioClient([]string{exe, "-test.run=^$"}, []string{"MCP_STDIO_SERVER=1"}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -113,6 +113,15 @@ agents:
 	}
 }
 
+func TestReservedConnectorNames(t *testing.T) {
+	for _, name := range []string{"system", "files"} {
+		doc := "providers: {p: {type: ollama, model: m}}\nconnectors:\n  " + name + ": {type: http, base_url: https://example.com}\nagents: {a: {provider: p}}\n"
+		if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("%s: expected reserved-name error, got %v", name, err)
+		}
+	}
+}
+
 func TestCron(t *testing.T) {
 	loc := time.UTC
 	base := time.Date(2026, 9, 25, 10, 7, 30, 0, loc) // Friday

@@ -15,6 +15,10 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default; jobs that need more ask for it.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -59,7 +63,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/agentd
+          images: ghcr.io/${{ github.repository_owner }}/agent-fabrik
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha
@@ -85,11 +89,20 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
 
+      # One-time rename agentd -> agent-fabrik: point the manifest at the new
+      # image name so pin-digest finds it; the digest it writes exists only
+      # under the new name, and both edits land in the same commit. A no-op
+      # once the manifest is migrated; delete this step afterwards.
+      - name: Migrate image name in the manifest
+        if: github.ref == 'refs/heads/main'
+        working-directory: gitops
+        run: sed -i 's#ghcr.io/getitdone-gmbh/agentd@#ghcr.io/getitdone-gmbh/agent-fabrik@#' infra/k8s/envs/itdone-cloud/itdone-agentd/deployment.yaml
+
       - name: Pin digest for ArgoCD
         if: github.ref == 'refs/heads/main'
         uses: ./gitops/.github/actions/pin-digest
         with:
           working-directory: gitops
           manifest: infra/k8s/envs/itdone-cloud/itdone-agentd/deployment.yaml
-          image: ghcr.io/getitdone-gmbh/agentd
+          image: ghcr.io/getitdone-gmbh/agent-fabrik
           digest: ${{ steps.build.outputs.digest }}

@@ -44,8 +44,10 @@ func TestShellFullMode(t *testing.T) {
 	if r, _ := runShell(t, c, `{"command":"echo \"[$AGENTD_SECRET_FOR_TEST]\""}`); r.Stdout != "[]\n" {
 		t.Errorf("environment leaked: %q", r.Stdout)
 	}
-	if _, err := runShell(t, c, `{"command":"sudo ls"}`); err == nil || !strings.Contains(err.Error(), "denied") {
-		t.Errorf("deny: %v", err)
+	for _, cmd := range []string{"sudo ls", "sudo /bin/ls"} {
+		if _, err := runShell(t, c, `{"command":"`+cmd+`"}`); err == nil || !strings.Contains(err.Error(), "denied") {
+			t.Errorf("deny %q: %v", cmd, err)
+		}
 	}
 }
 
@@ -118,5 +120,17 @@ func TestSplitWords(t *testing.T) {
 		if _, err := SplitWords(bad); err == nil {
 			t.Errorf("%q: expected error", bad)
 		}
+	}
+}
+
+func TestChildEnvKeepsSecretsOut(t *testing.T) {
+	t.Setenv("AGENT_RUNTIME_TOKEN", "admin-secret")
+	t.Setenv("PATH", "/usr/bin")
+	env := strings.Join(childEnv(false, map[string]string{"X": "1"}), "\n")
+	if strings.Contains(env, "admin-secret") || !strings.Contains(env, "PATH=/usr/bin") || !strings.Contains(env, "X=1") {
+		t.Errorf("minimal env: %q", env)
+	}
+	if !strings.Contains(strings.Join(childEnv(true, nil), "\n"), "admin-secret") {
+		t.Error("inherit_env should pass the environment on")
 	}
 }

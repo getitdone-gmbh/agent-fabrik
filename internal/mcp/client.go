@@ -12,7 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -124,7 +123,7 @@ type Client struct {
 }
 
 // ClientInfo identifies this runtime to servers.
-var ClientInfo = map[string]string{"name": "agentd", "version": "1.0.0"}
+var ClientInfo = map[string]string{"name": "agent-fabrik", "version": "1.0.0"}
 
 func (c *Client) call(ctx context.Context, method string, params any, out any) error {
 	res, err := c.t.call(ctx, c.nextID.Add(1), method, params)
@@ -219,7 +218,22 @@ func NewHTTPClient(url string, headers map[string]string, timeout time.Duration,
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
-	return &Client{t: &httpTransport{url: url, headers: headers, client: &http.Client{Timeout: timeout, Transport: rt}}}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: rt,
+		// headers usually carry the server's credentials; Go would re-send
+		// custom ones (X-Api-Key, ...) to any redirect target.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("redirect to %s://%s is not allowed", req.URL.Scheme, req.URL.Host)
+			}
+			return nil
+		},
+	}
+	return &Client{t: &httpTransport{url: url, headers: headers, client: client}}
 }
 
 func (h *httpTransport) setProtocol(v string) {
@@ -385,17 +399,14 @@ type stdioTransport struct {
 }
 
 // NewStdioClient starts an MCP server subprocess speaking newline-delimited
-// JSON-RPC over stdin/stdout.
-func NewStdioClient(command []string, env map[string]string, dir string, log *slog.Logger) (*Client, error) {
+// JSON-RPC over stdin/stdout. env is its complete environment.
+func NewStdioClient(command []string, env []string, dir string, log *slog.Logger) (*Client, error) {
 	if len(command) == 0 {
 		return nil, errors.New("mcp: empty command")
 	}
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

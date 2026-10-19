@@ -1,5 +1,5 @@
-# Example: agentd as a customer app on ITDone Cloud (copy to your repo root).
-# ITDone itself runs agentd via ArgoCD instead (itdone-cloud: infra/k8s/envs/
+# Example: agent-fabrik as a customer app on ITDone Cloud (copy to your repo root).
+# ITDone itself runs agent-fabrik via ArgoCD instead (itdone-cloud: infra/k8s/envs/
 # itdone-cloud/itdone-agentd). The platform
 # builds this repo with Cloud Native Buildpacks and runs two replicas behind
 # one URL. Tenants are ITDone users (their dashboard token is checked against

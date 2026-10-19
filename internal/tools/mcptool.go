@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/mcp"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/mcp"
 )
 
 // MCPConfig configures an MCP server connection. Set URL for streamable
@@ -21,6 +21,7 @@ type MCPConfig struct {
 	Headers    map[string]string `yaml:"headers"`
 	Command    []string          `yaml:"command"`
 	Env        map[string]string `yaml:"env"`
+	InheritEnv bool              `yaml:"inherit_env"` // stdio: pass agent-fabrik's environment (API keys!) on
 	Dir        string            `yaml:"dir"`
 	Include    []string          `yaml:"include"` // tool name globs to expose (default all)
 	Exclude    []string          `yaml:"exclude"`
@@ -64,7 +65,7 @@ func (m *MCPConnector) connect(ctx context.Context) (*mcp.Client, error) {
 		c = mcp.NewHTTPClient(m.cfg.URL, m.cfg.Headers, time.Duration(m.cfg.TimeoutSec)*time.Second, m.cfg.Transport)
 	} else {
 		var err error
-		c, err = mcp.NewStdioClient(m.cfg.Command, m.cfg.Env, m.cfg.Dir, m.log)
+		c, err = mcp.NewStdioClient(m.cfg.Command, childEnv(m.cfg.InheritEnv, m.cfg.Env), m.cfg.Dir, m.log)
 		if err != nil {
 			return nil, err
 		}

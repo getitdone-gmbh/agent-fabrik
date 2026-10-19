@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 )
 
 // TenancyConfig enables multi-tenant mode: many users manage their own

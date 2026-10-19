@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/netguard"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/netguard"
 )
 
 // HTTPConfig configures an HTTP connector. It can expose declared endpoints
@@ -80,7 +80,21 @@ func NewHTTPConnector(name string, cfg HTTPConfig) (*HTTPConnector, error) {
 	if cfg.TimeoutSec > 0 {
 		timeout = time.Duration(cfg.TimeoutSec) * time.Second
 	}
-	c.trusted = &http.Client{Timeout: timeout}
+	// The trusted client carries the connector's credentials, so it never
+	// leaves the base host: Go would re-send custom headers like X-Api-Key
+	// to any redirect target.
+	c.trusted = &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if !c.onBase(req.URL) {
+				return fmt.Errorf("redirect to %s://%s is not allowed", req.URL.Scheme, req.URL.Host)
+			}
+			return nil
+		},
+	}
 	if cfg.Transport != nil {
 		c.cfg.AllowPrivate = false
 		c.trusted.Transport = cfg.Transport
@@ -110,6 +124,12 @@ func NewHTTPConnector(name string, cfg HTTPConfig) (*HTTPConnector, error) {
 
 func (c *HTTPConnector) Name() string { return c.name }
 func (c *HTTPConnector) Close() error { return nil }
+
+// onBase reports whether u has the base URL's scheme and host, the only
+// place the connector's credentials may go.
+func (c *HTTPConnector) onBase(u *url.URL) bool {
+	return c.base != nil && strings.EqualFold(u.Scheme, c.base.Scheme) && strings.EqualFold(u.Host, c.base.Host)
+}
 
 func (c *HTTPConnector) hostAllowed(u *url.URL) bool {
 	if u.Scheme != "http" && u.Scheme != "https" {
@@ -206,7 +226,7 @@ func (c *HTTPConnector) genericTool() Tool {
 			}
 			// Connector credentials are only sent to the configured base host.
 			headers := map[string]string{}
-			if c.base != nil && strings.EqualFold(u.Host, c.base.Host) {
+			if c.onBase(u) {
 				for k, v := range c.cfg.Headers {
 					headers[k] = v
 				}
@@ -222,7 +242,7 @@ func (c *HTTPConnector) genericTool() Tool {
 				}
 			}
 			client := c.generic
-			if c.base != nil && strings.EqualFold(u.Host, c.base.Host) {
+			if c.onBase(u) {
 				client = c.trusted
 			}
 			return c.do(ctx, client, a.Method, u.String(), headers, body)
@@ -341,7 +361,7 @@ func (c *HTTPConnector) do(ctx context.Context, client *http.Client, method, u s
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "agentd/1")
+	req.Header.Set("User-Agent", "agent-fabrik/1")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

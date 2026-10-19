@@ -2,12 +2,12 @@
 #   export AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24) RUNTIME_SECRET_KEY=$(openssl rand -base64 32)
 #   docker compose -f deploy/docker-compose.yaml up -d
 services:
-  agentd:
+  agent-fabrik:
     build: ..
     ports: ["8080:8080"]
     environment:
       TENANCY_ENABLED: "true"
-      DATABASE_URL: postgres://agentd:agentd@db:5432/agentd?sslmode=disable
+      DATABASE_URL: postgres://fabrik:fabrik@db:5432/fabrik?sslmode=disable
       AGENT_RUNTIME_TOKEN: ${AGENT_RUNTIME_TOKEN:?set AGENT_RUNTIME_TOKEN}
       RUNTIME_SECRET_KEY: ${RUNTIME_SECRET_KEY:?set RUNTIME_SECRET_KEY}
       LLM_PROVIDER: ${LLM_PROVIDER:-mistral}
@@ -24,12 +24,12 @@ services:
   db:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: agentd
-      POSTGRES_PASSWORD: agentd
-      POSTGRES_DB: agentd
+      POSTGRES_USER: fabrik
+      POSTGRES_PASSWORD: fabrik
+      POSTGRES_DB: fabrik
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "agentd"]
+      test: ["CMD", "pg_isready", "-U", "fabrik"]
       interval: 5s
       retries: 10
     restart: unless-stopped

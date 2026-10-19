@@ -12,8 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 )
 
 // Config is the root configuration document.
@@ -39,6 +39,7 @@ type ServerConfig struct {
 	CORSOrigins       []string `yaml:"cors_origins"`
 	MCP               *bool    `yaml:"mcp"`        // serve agents at /mcp (default true)
 	OpenAI            *bool    `yaml:"openai_api"` // serve /v1/chat/completions (default true)
+	UI                *bool    `yaml:"ui"`         // serve the web UI at /ui/ (default true)
 	MaxBodyBytes      int64    `yaml:"max_body_bytes"`
 }
 
@@ -240,6 +241,9 @@ func (c *Config) validate(opts ParseOptions) error {
 	for _, name := range sortedKeys(c.Connectors) {
 		if !nameRe.MatchString(name) {
 			errs = append(errs, fmt.Sprintf("connector name %q must match %s", name, nameRe))
+		}
+		if name == "system" || name == "files" {
+			errs = append(errs, fmt.Sprintf("connector name %q is reserved for the built-in connector", name))
 		}
 		if c.Connectors[name].Type == "shell" && c.Tenancy.Enabled {
 			// A child process can read the parent's environment via /proc,

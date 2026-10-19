@@ -4,6 +4,8 @@ package triggers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	imail "github.com/getitdone-gmbh/agentd/internal/mail"
-	"github.com/getitdone-gmbh/agentd/internal/metrics"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	imail "github.com/getitdone-gmbh/agent-fabrik/internal/mail"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/metrics"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
 )
 
 // NoReply is the answer an agent gives to suppress an email reply.
@@ -162,7 +164,9 @@ func (p *poller) senderAllowed(from string) bool {
 	return false
 }
 
-// threadSession maps an email thread to a stable session id.
+// threadSession maps an email thread to a stable session id. The sender is
+// part of it: thread ids come from headers anyone can write, and knowing a
+// Message-ID must not be enough to read on in someone else's conversation.
 func threadSession(e *imail.Email) string {
 	root := e.MessageID
 	if refs := strings.Fields(e.References); len(refs) > 0 {
@@ -173,7 +177,12 @@ func threadSession(e *imail.Email) string {
 	if root == "" {
 		return ""
 	}
-	return "mail:" + strings.Trim(root, "<>")
+	from := e.From
+	if a, err := mail.ParseAddress(e.From); err == nil {
+		from = a.Address
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(from) + "\x00" + strings.Trim(root, "<>")))
+	return "mail:" + hex.EncodeToString(sum[:16])
 }
 
 func (p *poller) handle(ctx context.Context, env Env, conn *tools.EmailConnector, e *imail.Email, reply bool) error {
@@ -209,8 +218,10 @@ func (p *poller) handle(ctx context.Context, env Env, conn *tools.EmailConnector
 		p.log.Info("email handled without reply", "uid", e.UID, "stop", res.StopReason)
 		return nil
 	}
+	// From is what allow_from checked; a Reply-To outside the allowlist
+	// would let anyone who forges an allowed From read the agent's answer.
 	to := e.ReplyTo
-	if to == "" {
+	if to == "" || !p.senderAllowed(to) {
 		to = e.From
 	}
 	subject := e.Subject

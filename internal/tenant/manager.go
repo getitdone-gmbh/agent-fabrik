@@ -17,14 +17,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/app"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
-	"github.com/getitdone-gmbh/agentd/internal/netguard"
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
-	"github.com/getitdone-gmbh/agentd/internal/triggers"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/app"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/netguard"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/triggers"
 )
 
 // System is the tenant id of the agents defined in the config file.
@@ -89,7 +89,7 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, system *app.Ap
 	if err != nil {
 		return nil, err
 	}
-	if ephemeral && cfg.Tenancy.Store.Type != "" && cfg.Tenancy.Store.Type != "memory" {
+	if ephemeral && cfg.Tenancy.Enabled && cfg.Tenancy.Store.Type != "" && cfg.Tenancy.Store.Type != "memory" {
 		return nil, errors.New("tenancy.secret_key is required with a persistent store: it encrypts tenant secrets. " +
 			"With the built-in config set RUNTIME_SECRET_KEY (openssl rand -base64 32) and keep it safe")
 	}

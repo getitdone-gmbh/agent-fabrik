@@ -9,12 +9,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
-	"github.com/getitdone-gmbh/agentd/internal/mail"
-	"github.com/getitdone-gmbh/agentd/internal/netguard"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/mail"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/netguard"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
 )
 
 // App is the running set of agents.
@@ -30,7 +30,8 @@ type App struct {
 	sem    chan struct{}
 }
 
-// optional marks a connector whose startup failure is logged instead of fatal.
+// connectorCommon holds the settings every connector type shares: optional
+// marks one whose startup failure is logged instead of fatal.
 type connectorCommon struct {
 	Optional bool `yaml:"optional"`
 }
@@ -60,7 +61,7 @@ func Build(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, err
 }
 
 // BuildWith constructs the app with options.
-func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts Options) (*App, error) {
+func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts Options) (_ *App, err error) {
 	conc := cfg.Server.MaxConcurrentRuns
 	if opts.MaxConcurrentRuns > 0 {
 		conc = opts.MaxConcurrentRuns
@@ -77,6 +78,13 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 		Failed:     map[string]string{},
 		sem:        make(chan struct{}, conc),
 	}
+	// Any failure from here on closes the connectors already started
+	// (stdio MCP servers are processes).
+	defer func() {
+		if err != nil {
+			a.Registry.Close()
+		}
+	}()
 
 	providers := map[string]llm.Provider{}
 	for name, p := range opts.Shared {
@@ -122,20 +130,21 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 				continue
 			}
 		}
-		conn, err := newConnector(name, cc, log, opts.Guarded)
-		if err == nil {
+		conn, cerr := newConnector(name, cc, log, opts.Guarded)
+		if cerr == nil {
 			cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			err = a.Registry.Add(cctx, conn)
+			if cerr = a.Registry.Add(cctx, conn); cerr != nil {
+				_ = conn.Close() // it may have connected before listing its tools failed
+			}
 			cancel()
 		}
-		if err != nil {
+		if cerr != nil {
 			if common.Optional || opts.ConnectorsOptional {
-				log.Warn("optional connector unavailable", "connector", name, "err", err)
-				a.Failed[name] = err.Error()
+				log.Warn("optional connector unavailable", "connector", name, "err", cerr)
+				a.Failed[name] = cerr.Error()
 				continue
 			}
-			a.Registry.Close()
-			return nil, err
+			return nil, cerr
 		}
 		a.Connectors[name] = conn
 	}
@@ -173,16 +182,20 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 		}
 		p, ok := providers[ac.Provider]
 		if !ok {
-			a.Registry.Close()
 			return nil, fmt.Errorf("agent %q: provider %q not available", name, ac.Provider)
 		}
 		ag, err := agent.New(ac.Config, p, a.Registry, a.Store, log)
 		if err != nil {
-			a.Registry.Close()
 			return nil, err
 		}
 		a.Agents[name] = ag
-		log.Info("agent ready", "agent", name, "provider", ac.Provider, "model", ac.Model, "tools", len(ag.Tools()))
+		// Tenant runtimes load and unload all day: one line per agent there
+		// would bury the log.
+		level := slog.LevelInfo
+		if opts.Guarded {
+			level = slog.LevelDebug
+		}
+		log.Log(ctx, level, "agent ready", "agent", name, "provider", ac.Provider, "tools", len(ag.Tools()))
 	}
 	return a, nil
 }

@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/app"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/mcp"
-	"github.com/getitdone-gmbh/agentd/internal/server"
-	"github.com/getitdone-gmbh/agentd/internal/tenant"
-	"github.com/getitdone-gmbh/agentd/internal/testutil"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/app"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/mcp"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/server"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tenant"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/testutil"
 )
 
 // fakeLLM is an OpenAI-compatible model: on a user turn it calls the first

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// ShellConfig configures a shell connector: commands on the machine agentd
+// ShellConfig configures a shell connector: commands on the machine agent-fabrik
 // runs on. It is meant for a single owner's own machine and is refused in
 // multi-tenant mode, where all tenants share one process.
 //
@@ -32,7 +32,7 @@ type ShellConfig struct {
 	Allow      []string          `yaml:"allow"`           // program globs, e.g. [git, ls, "python3*"]
 	Deny       []string          `yaml:"deny"`            // command-line globs, e.g. ["sudo *", "*rm -rf /*"]
 	Env        map[string]string `yaml:"env"`             // extra variables
-	InheritEnv bool              `yaml:"inherit_env"`     // pass agentd's environment (API keys!) on
+	InheritEnv bool              `yaml:"inherit_env"`     // pass agent-fabrik's environment (API keys!) on
 }
 
 // ShellConnector implements Connector for local commands.
@@ -125,7 +125,7 @@ func (c *ShellConnector) run(ctx context.Context, args json.RawMessage) (string,
 		return "", errors.New("command is empty")
 	}
 	for _, p := range c.cfg.Deny {
-		if ok, _ := path.Match(p, line); ok {
+		if denyMatch(p, line) {
 			return "", fmt.Errorf("command denied by policy (%s)", p)
 		}
 	}
@@ -217,11 +217,16 @@ func (c *ShellConnector) allowed(prog string) bool {
 	return false
 }
 
-// env is minimal by default so agentd's own secrets (LLM keys, runtime
+// env is minimal by default so agent-fabrik's own secrets (LLM keys, runtime
 // token) do not reach commands the model chooses.
-func (c *ShellConnector) env() []string {
+func (c *ShellConnector) env() []string { return childEnv(c.cfg.InheritEnv, c.cfg.Env) }
+
+// childEnv is the environment of a subprocess (shell commands, stdio MCP
+// servers): only PATH, HOME, locale and friends plus extra, unless inherit
+// passes agent-fabrik's whole environment, its API keys and tokens included.
+func childEnv(inherit bool, extra map[string]string) []string {
 	var env []string
-	if c.cfg.InheritEnv {
+	if inherit {
 		env = os.Environ()
 	} else {
 		for _, k := range []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TZ", "TMPDIR"} {
@@ -230,7 +235,7 @@ func (c *ShellConnector) env() []string {
 			}
 		}
 	}
-	for k, v := range c.cfg.Env {
+	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
 	return env
@@ -310,4 +315,12 @@ func SplitWords(s string) ([]string, error) {
 		return nil, errors.New("command is empty")
 	}
 	return words, nil
+}
+
+// denyMatch is path.Match with "*" also crossing "/": deny patterns match
+// whole command lines, where "sudo *" must catch "sudo /bin/rm".
+func denyMatch(pattern, line string) bool {
+	slash := func(s string) string { return strings.ReplaceAll(s, "/", "\x00") }
+	ok, _ := path.Match(slash(pattern), slash(line))
+	return ok
 }

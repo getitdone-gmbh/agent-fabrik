@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
 )
 
 // KeyPrefix marks runtime API keys.

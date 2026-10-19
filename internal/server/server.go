@@ -19,15 +19,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/app"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/llm"
-	"github.com/getitdone-gmbh/agentd/internal/mcp"
-	"github.com/getitdone-gmbh/agentd/internal/metrics"
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tenant"
-	"github.com/getitdone-gmbh/agentd/internal/tools"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/app"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/mcp"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/metrics"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tenant"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
 )
 
 // Version is set at build time.
@@ -111,12 +111,15 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 	if cfg.Server.MCP == nil || *cfg.Server.MCP {
 		mux.Handle("/mcp", s.auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := tenantOf(r)
-			srv := &mcp.Server{Name: "agentd", Version: Version, Tools: func() []mcp.ServerTool { return s.mcpTools(r.Context(), id) }}
+			srv := &mcp.Server{Name: "agent-fabrik", Version: Version, Tools: func() []mcp.ServerTool { return s.mcpTools(r.Context(), id) }}
 			srv.ServeHTTP(w, r)
 		})))
 	}
 	if m.Enabled() {
 		s.tenantRoutes(mux, h)
+	}
+	if cfg.Server.UI == nil || *cfg.Server.UI {
+		uiRoutes(mux)
 	}
 	return s.cors(s.limitBody(mux))
 }
@@ -208,7 +211,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 				writeError(w, http.StatusServiceUnavailable, "authentication backend unavailable")
 				return
 			}
-			w.Header().Set("WWW-Authenticate", `Bearer realm="agentd"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="agent-fabrik"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -560,9 +563,11 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many webhook calls, try again later")
 		return
 	}
+	// Unknown hooks and bad secrets answer alike, so hook names can't be
+	// probed without the secret.
 	t, ok := s.findHook(r.Context(), tenantID, name, r.PathValue("hook"))
 	if !ok {
-		writeError(w, http.StatusNotFound, "webhook not found")
+		writeError(w, http.StatusUnauthorized, "unknown webhook or invalid secret")
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -571,7 +576,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.verifyHook(t, r, body, tenantID == tenant.System) {
-		writeError(w, http.StatusUnauthorized, "invalid webhook secret")
+		writeError(w, http.StatusUnauthorized, "unknown webhook or invalid secret")
 		return
 	}
 	payload := string(body)

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>agent-fabrik</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23e8590c'/%3E%3Cpath d='M9 22l7-12 7 12' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/agents"><span class="mark" aria-hidden="true"></span>agent-fabrik</a>
+  <nav id="nav" class="nav" hidden>
+    <a href="#/agents" data-nav="agents">Agents</a>
+    <a href="#/providers" data-nav="providers" data-tenant>Providers</a>
+    <a href="#/connectors" data-nav="connectors" data-tenant>Connectors</a>
+    <a href="#/secrets" data-nav="secrets" data-tenant>Secrets</a>
+  </nav>
+  <div id="who" class="who" hidden>
+    <select id="tenant-switch" title="Act as tenant (admin)" hidden></select>
+    <span id="who-label" class="muted"></span>
+    <button id="logout" class="ghost small" type="button">Sign out</button>
+  </div>
+</header>
+
+<main id="view" class="view">
+  <noscript>This page needs JavaScript.</noscript>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<template id="tpl-login">
+  <section class="login card">
+    <h1>Sign in</h1>
+    <p class="muted">Use a runtime key (<code>ark_…</code>), your platform token or the admin token. It is sent only to this server.</p>
+    <form id="login-form">
+      <label>Token<input id="login-token" type="password" autocomplete="current-password" required autofocus></label>
+      <label class="check"><input id="login-remember" type="checkbox"> Remember on this device</label>
+      <p id="login-error" class="error" hidden></p>
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+  </section>
+</template>
+</body>
+</html>

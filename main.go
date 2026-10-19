@@ -1,4 +1,4 @@
-// Command agentd is a small, multi-tenant agent runtime: a daemon that runs LLM
+// Command fabrik (agent-fabrik) is a small, multi-tenant agent runtime: a daemon that runs LLM
 // agents with tools from MCP, HTTP, SMTP and IMAP connectors, triggered via
 // HTTP, MCP, webhooks, schedules or incoming email.
 package main
@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,12 +20,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
-	"github.com/getitdone-gmbh/agentd/internal/app"
-	"github.com/getitdone-gmbh/agentd/internal/config"
-	"github.com/getitdone-gmbh/agentd/internal/server"
-	"github.com/getitdone-gmbh/agentd/internal/store"
-	"github.com/getitdone-gmbh/agentd/internal/tenant"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/app"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/server"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/tenant"
 )
 
 var version = "dev"
@@ -38,7 +39,7 @@ var defaultConfig []byte
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "agentd:", err)
+		fmt.Fprintln(os.Stderr, "fabrik:", err)
 		os.Exit(1)
 	}
 }
@@ -122,7 +123,12 @@ func run() error {
 		if cfg.Tenancy.Enabled {
 			log.Warn("server.auth_token is not set: admin API disabled")
 		} else {
-			log.Warn("server.auth_token is not set: the HTTP API is UNAUTHENTICATED")
+			addr, err := loopbackOnly(cfg.Server.Addr)
+			if err != nil {
+				return err
+			}
+			cfg.Server.Addr = addr
+			log.Warn("server.auth_token is not set: the HTTP API is UNAUTHENTICATED and only listens on loopback", "addr", addr)
 		}
 	}
 	var wg sync.WaitGroup
@@ -252,4 +258,25 @@ func openStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 	default:
 		return store.NewMem("", t.SessionTTLDur(), cfg.Memory.MaxSessions)
 	}
+}
+
+// loopbackOnly keeps an API without a token off the network: a bare port
+// (":8080") becomes 127.0.0.1:8080, an explicit non-loopback host is refused.
+// Anyone running the image with just an LLM key would otherwise publish a
+// free proxy to that key.
+func loopbackOnly(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("server.addr %q: %w", addr, err)
+	}
+	if host == "" {
+		return net.JoinHostPort("127.0.0.1", port), nil
+	}
+	if host == "localhost" {
+		return addr, nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return addr, nil
+	}
+	return "", fmt.Errorf("server.addr %q is reachable from the network but server.auth_token is not set; set AGENT_RUNTIME_TOKEN", addr)
 }

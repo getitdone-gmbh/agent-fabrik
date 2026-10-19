@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getitdone-gmbh/agentd/internal/agent"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
 )
 
 // Mem keeps everything in memory. With a path, tenant data (not sessions)
@@ -172,6 +172,11 @@ func (m *Mem) DeleteTenant(_ context.Context, id string) error {
 		if k.TenantID == id {
 			delete(m.data.Keys, h)
 		}
+	}
+	// A tenant recreated with the same id (external auth does that on the
+	// next sign-in) must not inherit the old conversations.
+	if ms, ok := m.sessions.(*agent.MemoryStore); ok {
+		ms.DeleteAgents(id + "/")
 	}
 	m.markDirty()
 	return nil

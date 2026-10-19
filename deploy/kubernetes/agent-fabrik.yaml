@@ -1,34 +1,34 @@
 # Minimal Kubernetes deployment. Create the secret first:
-#   kubectl create secret generic agentd \
+#   kubectl create secret generic agent-fabrik \
 #     --from-literal=AGENT_RUNTIME_TOKEN=$(openssl rand -hex 24) \
 #     --from-literal=RUNTIME_SECRET_KEY=$(openssl rand -base64 32) \
-#     --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/agentd?sslmode=require' \
+#     --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/agent-fabrik?sslmode=require' \
 #     --from-literal=LLM_API_KEY=...
 # Two replicas share the load; one of them (Postgres advisory lock) runs the
 # scheduler and fails over automatically.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: agentd
+  name: agent-fabrik
 spec:
   replicas: 2
   selector:
-    matchLabels: {app: agentd}
+    matchLabels: {app: agent-fabrik}
   template:
     metadata:
-      labels: {app: agentd}
+      labels: {app: agent-fabrik}
     spec:
       securityContext: {runAsNonRoot: true}
       containers:
-        - name: agentd
-          image: ghcr.io/OWNER/agentd:latest   # build with the Dockerfile
+        - name: agent-fabrik
+          image: ghcr.io/OWNER/agent-fabrik:latest   # build with the Dockerfile
           ports: [{containerPort: 8080}]
           env:
             - {name: TENANCY_ENABLED, value: "true"}
             - {name: LLM_PROVIDER, value: mistral}
             - {name: GOMEMLIMIT, value: 200MiB}
           envFrom:
-            - secretRef: {name: agentd}
+            - secretRef: {name: agent-fabrik}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {memory: 256Mi}
@@ -44,7 +44,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: agentd
+  name: agent-fabrik
 spec:
-  selector: {app: agentd}
+  selector: {app: agent-fabrik}
   ports: [{port: 80, targetPort: 8080}]
