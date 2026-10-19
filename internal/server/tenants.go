@@ -312,10 +312,12 @@ func (s *Server) listKeys(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newKey(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Name string `json:"name"`
+		Name   string   `json:"name"`
+		Scope  string   `json:"scope"`
+		Agents []string `json:"agents"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	plain, k, err := s.m.CreateKey(r.Context(), id, body.Name)
+	plain, k, err := s.m.CreateKey(r.Context(), id, tenant.KeyOptions{Name: body.Name, Scope: body.Scope, Agents: body.Agents})
 	if err != nil {
 		fail(w, err)
 		return
@@ -375,7 +377,7 @@ func (s *Server) adminCreateTenant(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	plain, _, err := s.m.CreateKey(r.Context(), created.ID, "initial")
+	plain, _, err := s.m.CreateKey(r.Context(), created.ID, tenant.KeyOptions{Name: "initial"})
 	if err != nil {
 		fail(w, err)
 		return

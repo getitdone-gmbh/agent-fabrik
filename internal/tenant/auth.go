@@ -38,13 +38,68 @@ func randID(prefix string, n int) string {
 	return prefix + base64.RawURLEncoding.EncodeToString(b)
 }
 
+// Principal is who a token speaks for: a tenant, and what the token may do
+// there. External (login) tokens are always ScopeAdmin.
+type Principal struct {
+	Tenant string
+	Scope  string
+	Agents []string // run keys only; empty = all agents
+}
+
+// MayRun reports whether the principal may run the named agent.
+func (p Principal) MayRun(agent string) bool {
+	if len(p.Agents) == 0 {
+		return true
+	}
+	for _, a := range p.Agents {
+		if a == agent {
+			return true
+		}
+	}
+	return false
+}
+
+// KeyOptions shape a new API key.
+type KeyOptions struct {
+	Name   string
+	Scope  string   // "" or ScopeAdmin, or ScopeRun
+	Agents []string // only with ScopeRun
+}
+
+// ErrInvalidKey rejects contradictory key options.
+var ErrInvalidKey = errors.New("invalid key options")
+
+var keyAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
 // CreateKey issues a new API key; the plaintext is returned only once.
-func (m *Manager) CreateKey(ctx context.Context, tenant, name string) (string, *store.APIKey, error) {
+func (m *Manager) CreateKey(ctx context.Context, tenant string, o KeyOptions) (string, *store.APIKey, error) {
 	if tenant == System {
 		return "", nil, ErrReadOnly
 	}
+	switch o.Scope {
+	case "", store.ScopeAdmin:
+		o.Scope = store.ScopeAdmin
+		if len(o.Agents) > 0 {
+			return "", nil, fmt.Errorf("%w: agents require scope %q", ErrInvalidKey, store.ScopeRun)
+		}
+	case store.ScopeRun:
+		if len(o.Agents) > 100 {
+			return "", nil, fmt.Errorf("%w: at most 100 agents", ErrInvalidKey)
+		}
+		for _, a := range o.Agents {
+			if !keyAgentName.MatchString(a) {
+				return "", nil, fmt.Errorf("%w: bad agent name %q", ErrInvalidKey, a)
+			}
+		}
+	default:
+		return "", nil, fmt.Errorf("%w: scope must be %q or %q", ErrInvalidKey, store.ScopeAdmin, store.ScopeRun)
+	}
+	if len(o.Name) > 100 {
+		return "", nil, fmt.Errorf("%w: name too long", ErrInvalidKey)
+	}
 	plain := randID(KeyPrefix, 32)
-	k := store.APIKey{ID: randID("key_", 9), TenantID: tenant, Name: name, Hash: hashToken(plain), Prefix: plain[:12]}
+	k := store.APIKey{ID: randID("key_", 9), TenantID: tenant, Name: o.Name, Hash: hashToken(plain), Prefix: plain[:12],
+		Scope: o.Scope, Agents: o.Agents}
 	if err := m.st.CreateKey(ctx, k); err != nil {
 		return "", nil, err
 	}
@@ -63,73 +118,82 @@ func (m *Manager) DeleteKey(ctx context.Context, tenant, id string) error {
 
 // Authenticate maps a bearer token (runtime key or external token) to a tenant.
 func (m *Manager) Authenticate(ctx context.Context, token string) (string, error) {
+	p, err := m.Resolve(ctx, token)
+	return p.Tenant, err
+}
+
+// Resolve maps a bearer token to the tenant and the token's scope.
+func (m *Manager) Resolve(ctx context.Context, token string) (Principal, error) {
 	if !m.Enabled() || token == "" {
-		return "", ErrUnauthorized
+		return Principal{}, ErrUnauthorized
 	}
 	h := hashToken(token)
-	if id, ok := m.keys.get(h); ok {
-		if id == "" {
-			return "", ErrUnauthorized
+	if p, ok := m.keys.get(h); ok {
+		if p.Tenant == "" {
+			return Principal{}, ErrUnauthorized
 		}
-		return id, nil
+		return p, nil
 	}
-	var id string
+	var p Principal
 	if strings.HasPrefix(token, KeyPrefix) {
 		k, err := m.st.KeyByHash(ctx, h)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return "", err
+			return Principal{}, err
 		}
 		if k != nil {
-			id = k.TenantID
+			p = Principal{Tenant: k.TenantID, Scope: k.Scope, Agents: k.Agents}
+			if p.Scope == "" {
+				p.Scope = store.ScopeAdmin
+			}
 		}
 	} else if m.external != nil {
-		var err error
-		id, err = m.externalTenant(ctx, token)
+		id, err := m.externalTenant(ctx, token)
 		if err != nil && !errors.Is(err, ErrUnauthorized) {
-			return "", err
+			return Principal{}, err
 		}
+		p = Principal{Tenant: id, Scope: store.ScopeAdmin}
 	}
-	m.keys.put(h, id)
-	if id == "" {
-		return "", ErrUnauthorized
+	m.keys.put(h, p)
+	if p.Tenant == "" {
+		return Principal{}, ErrUnauthorized
 	}
-	return id, nil
+	return p, nil
 }
 
-// keyCache caches token hash -> tenant id (negative results as "").
+// keyCache caches token hash -> principal (negative results as an empty tenant).
 type keyCache struct {
 	mu sync.Mutex
 	m  map[string]keyEntry
 }
 
 type keyEntry struct {
-	tenant string
-	exp    time.Time
+	p   Principal
+	exp time.Time
 }
 
 func newKeyCache() *keyCache { return &keyCache{m: map[string]keyEntry{}} }
 
-func (c *keyCache) get(h string) (string, bool) {
+func (c *keyCache) get(h string) (Principal, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[h]
 	if !ok || time.Now().After(e.exp) {
-		return "", false
+		return Principal{}, false
 	}
-	return e.tenant, true
+	return e.p, true
 }
 
-func (c *keyCache) put(h, tenant string) {
+func (c *keyCache) put(h string, p Principal) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ttl := time.Minute
-	if tenant == "" {
+	if p.Tenant == "" {
 		ttl = 10 * time.Second
 	}
 	if len(c.m) > 100000 {
 		c.m = map[string]keyEntry{}
 	}
-	c.m[h] = keyEntry{tenant: tenant, exp: time.Now().Add(ttl)}
+	c.m[h] = keyEntry{p: p, exp: time.Now().Add(ttl)}
 }
 
 func (c *keyCache) clear() {

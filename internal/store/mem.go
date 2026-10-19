@@ -212,6 +212,7 @@ func (m *Mem) CreateKey(_ context.Context, k APIKey) error {
 	if k.CreatedAt.IsZero() {
 		k.CreatedAt = time.Now().UTC()
 	}
+	k.Scope = keyScope(k.Scope)
 	m.data.Keys[k.Hash] = &k
 	m.markDirty()
 	return nil
@@ -225,6 +226,7 @@ func (m *Mem) KeyByHash(_ context.Context, hash string) (*APIKey, error) {
 		return nil, ErrNotFound
 	}
 	c := *k
+	c.Scope = keyScope(c.Scope)
 	return &c, nil
 }
 
@@ -234,7 +236,9 @@ func (m *Mem) ListKeys(_ context.Context, tenant string) ([]APIKey, error) {
 	var out []APIKey
 	for _, k := range m.data.Keys {
 		if k.TenantID == tenant {
-			out = append(out, *k)
+			c := *k
+			c.Scope = keyScope(c.Scope)
+			out = append(out, c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })

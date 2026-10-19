@@ -25,7 +25,9 @@ type App struct {
 	Store      agent.Store
 	Agents     map[string]*agent.Agent
 	Connectors map[string]tools.Connector
-	sem        chan struct{}
+	// Failed holds optional connectors that could not start, with the reason.
+	Failed map[string]string
+	sem    chan struct{}
 }
 
 // connectorCommon holds the settings every connector type shares: optional
@@ -73,6 +75,7 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 		Registry:   tools.NewRegistry(),
 		Agents:     map[string]*agent.Agent{},
 		Connectors: map[string]tools.Connector{},
+		Failed:     map[string]string{},
 		sem:        make(chan struct{}, conc),
 	}
 	// Any failure from here on closes the connectors already started
@@ -138,6 +141,7 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 		if cerr != nil {
 			if common.Optional || opts.ConnectorsOptional {
 				log.Warn("optional connector unavailable", "connector", name, "err", cerr)
+				a.Failed[name] = cerr.Error()
 				continue
 			}
 			return nil, cerr
