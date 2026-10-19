@@ -12,7 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -400,17 +399,14 @@ type stdioTransport struct {
 }
 
 // NewStdioClient starts an MCP server subprocess speaking newline-delimited
-// JSON-RPC over stdin/stdout.
-func NewStdioClient(command []string, env map[string]string, dir string, log *slog.Logger) (*Client, error) {
+// JSON-RPC over stdin/stdout. env is its complete environment.
+func NewStdioClient(command []string, env []string, dir string, log *slog.Logger) (*Client, error) {
 	if len(command) == 0 {
 		return nil, errors.New("mcp: empty command")
 	}
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

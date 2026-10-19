@@ -469,7 +469,11 @@ the core.
   also covers DNS rebinding. Allow specific internal services with
   `allow_networks`.
 - **No host access for tenants.** stdio MCP servers and `allow_private` are
-  refused.
+  refused. Your own stdio MCP servers and shell commands get only `PATH`,
+  `HOME` and locale plus their `env`, not agent-fabrik's keys and tokens
+  (`inherit_env: true` to change that). This keeps an MCP server that logs
+  or forwards its environment from leaking them; it is no sandbox against
+  a malicious one running as the same user.
 - **Namespacing.** Sessions, usage, files and webhooks are namespaced per
   tenant. Tenant webhooks always need their own secret.
 - **Bounded tool calls.** Each tool call has a timeout, its output is

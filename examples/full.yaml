@@ -75,11 +75,13 @@ connectors:
     include: ["list_*", "get_*"]   # read-only subset
     optional: true
 
-  # Any stdio MCP server (needs the binary/runtime in the image).
-  # files:
+  # Any stdio MCP server (needs the binary/runtime in the image). It gets
+  # only PATH, HOME and locale plus env, not agent-fabrik's API keys.
+  # fs:
   #   type: mcp
   #   command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
   #   env: {NODE_ENV: production}
+  #   # inherit_env: true          # pass the whole environment (API keys!) on
 
   # Typed HTTP endpoints become individual tools.
   github:

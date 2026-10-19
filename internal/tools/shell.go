@@ -219,9 +219,14 @@ func (c *ShellConnector) allowed(prog string) bool {
 
 // env is minimal by default so agent-fabrik's own secrets (LLM keys, runtime
 // token) do not reach commands the model chooses.
-func (c *ShellConnector) env() []string {
+func (c *ShellConnector) env() []string { return childEnv(c.cfg.InheritEnv, c.cfg.Env) }
+
+// childEnv is the environment of a subprocess (shell commands, stdio MCP
+// servers): only PATH, HOME, locale and friends plus extra, unless inherit
+// passes agent-fabrik's whole environment, its API keys and tokens included.
+func childEnv(inherit bool, extra map[string]string) []string {
 	var env []string
-	if c.cfg.InheritEnv {
+	if inherit {
 		env = os.Environ()
 	} else {
 		for _, k := range []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TZ", "TMPDIR"} {
@@ -230,7 +235,7 @@ func (c *ShellConnector) env() []string {
 			}
 		}
 	}
-	for k, v := range c.cfg.Env {
+	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
 	return env

@@ -122,3 +122,15 @@ func TestSplitWords(t *testing.T) {
 		}
 	}
 }
+
+func TestChildEnvKeepsSecretsOut(t *testing.T) {
+	t.Setenv("AGENT_RUNTIME_TOKEN", "admin-secret")
+	t.Setenv("PATH", "/usr/bin")
+	env := strings.Join(childEnv(false, map[string]string{"X": "1"}), "\n")
+	if strings.Contains(env, "admin-secret") || !strings.Contains(env, "PATH=/usr/bin") || !strings.Contains(env, "X=1") {
+		t.Errorf("minimal env: %q", env)
+	}
+	if !strings.Contains(strings.Join(childEnv(true, nil), "\n"), "admin-secret") {
+		t.Error("inherit_env should pass the environment on")
+	}
+}
