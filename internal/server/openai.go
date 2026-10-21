@@ -135,16 +135,20 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			"id": id, "object": "chat.completion.chunk", "created": created, "model": name,
 			"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finishReason}},
 		})
-		fmt.Fprintf(w, "data: %s\n\n", b)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		timedWrite(w, func() {
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		})
 	}
 	chunk(map[string]string{"role": "assistant"}, nil)
 	chunk(map[string]string{"content": res.Output}, nil)
 	chunk(map[string]string{}, finish)
-	fmt.Fprint(w, "data: [DONE]\n\n")
-	if flusher != nil {
-		flusher.Flush()
-	}
+	timedWrite(w, func() {
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
 }

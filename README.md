@@ -201,7 +201,13 @@ reference a missing provider and a secret still in use can't be deleted.
   or an in-cluster Ollama.
 
 `server.max_concurrent_runs` caps the whole process. `GET /v1/me` shows each
-tenant its limits and this month's usage.
+tenant its limits and this month's usage. The monthly token budget is checked
+when a run arrives and again when it actually starts, after any queueing, so
+it can only be overshot by the runs in flight at that moment.
+
+A tenant disabled by the admin (`PATCH /v1/admin/tenants/{id}`
+`{"disabled":true}`) is locked out of the whole API, not only runs; the admin
+can still act as it with `X-Tenant`.
 
 **Cheap when idle.** A tenant's runtime (providers, MCP clients, agents) is
 built on first use and shared by concurrent runs. It is rebuilt atomically
@@ -282,7 +288,11 @@ All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>` (or
 > [!WARNING]
 > If no token is configured and tenancy is off, the API is open. agent-fabrik then
 > listens on loopback only (`:8080` becomes `127.0.0.1:8080`) and refuses to
-> start on any other address. Set `AGENT_RUNTIME_TOKEN` to serve the network.
+> start on any other address. It also refuses requests whose `Host` is not
+> `localhost`/`127.0.0.1` or that come from another web page (`Origin`), so a
+> site in your browser can't drive your local agents. Set
+> `AGENT_RUNTIME_TOKEN` to serve the network, and always with a `shell`
+> connector.
 
 | Route | Purpose |
 |---|---|
