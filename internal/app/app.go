@@ -285,7 +285,9 @@ func (a *App) Run(ctx context.Context, name string, in agent.RunInput) (*agent.R
 // RunThen is Run with a gate that is passed only after the app's own slot is
 // held. The tenant manager uses it for the process-wide slots: taking those
 // first let a tenant over its own cap park runs on them and starve everyone.
-func (a *App) RunThen(ctx context.Context, name string, in agent.RunInput, gate func(context.Context) (func(), error)) (*agent.RunResult, error) {
+// The gate's release gets the run's result and is called before the app's
+// slot is given back, so the next queued run sees what this one spent.
+func (a *App) RunThen(ctx context.Context, name string, in agent.RunInput, gate func(context.Context) (func(*agent.RunResult), error)) (res *agent.RunResult, err error) {
 	ag, ok := a.Agents[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", name)
@@ -301,7 +303,7 @@ func (a *App) RunThen(ctx context.Context, name string, in agent.RunInput, gate 
 		if err != nil {
 			return nil, err
 		}
-		defer release()
+		defer func() { release(res) }()
 	}
 	return ag.Run(ctx, in)
 }

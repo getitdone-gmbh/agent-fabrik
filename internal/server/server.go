@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -124,9 +126,55 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 	return s.cors(s.limitBody(mux))
 }
 
+// Deadlines for slow clients. Each one covers a single request body or a
+// single write and is cleared afterwards: Go resets the read deadline for
+// every request but not the write deadline (WriteTimeout is 0, since a run
+// may take minutes), so a write deadline would outlive its response on a
+// keep-alive connection, and a read deadline left running after the body
+// would cancel the request's context in the middle of a long run.
+var (
+	bodyReadTimeout = time.Minute
+	writeTimeout    = time.Minute
+)
+
+// deadlineBody clears the read deadline once the body has been read to
+// the end. After a timeout it stays: Go reads the rest of an unread body
+// after the handler, and without a deadline a trickling client would hold
+// the connection there instead.
+type deadlineBody struct {
+	io.ReadCloser
+	rc   *http.ResponseController
+	done bool
+}
+
+func (b *deadlineBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if errors.Is(err, io.EOF) && !b.done {
+		b.done = true
+		_ = b.rc.SetReadDeadline(time.Time{})
+	}
+	return n, err
+}
+
+// timedWrite bounds one write to the client.
+func timedWrite(w http.ResponseWriter, write func()) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+	write()
+	_ = rc.SetWriteDeadline(time.Time{})
+}
+
 func (s *Server) limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		metrics.HTTPRequests.Add(1)
+		if r.Body != nil && r.Body != http.NoBody {
+			// A client sending its body a byte at a time must not hold a
+			// handler (and its run slot) for ever. File uploads extend this
+			// once they hold a transfer slot (putFile).
+			rc := http.NewResponseController(w)
+			_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+			r.Body = &deadlineBody{ReadCloser: r.Body, rc: rc}
+		}
 		// File uploads are capped by the tenant's per-file quota instead
 		// (putFile), which may be larger than the API body limit.
 		if !(r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/files/")) {
@@ -202,8 +250,42 @@ func (s *Server) resolve(r *http.Request) (tenant.Principal, bool, error) {
 	return p, false, err
 }
 
+// localOnly guards the API when it runs without a token: the listener is
+// on loopback, but a web page in the user's browser can still send requests
+// there (no CORS preflight for a text/plain POST) or reach it through DNS
+// rebinding. So the Host must be a loopback name and a browser's Origin a
+// loopback origin; curl and local programs send no Origin.
+func localOnly(r *http.Request) bool {
+	loopback := func(hostport string) bool {
+		host := hostport
+		if h, _, err := net.SplitHostPort(hostport); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if strings.EqualFold(host, "localhost") {
+			return true
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	}
+	if !loopback(r.Host) {
+		return false
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !loopback(u.Host) {
+			return false
+		}
+	}
+	return r.Header.Get("Sec-Fetch-Site") != "cross-site"
+}
+
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.tokens) == 0 && !s.m.Enabled() && !localOnly(r) {
+			writeError(w, http.StatusForbidden, "without server.auth_token only local requests are accepted (Host and Origin must be localhost)")
+			return
+		}
 		p, admin, err := s.resolve(r)
 		if err != nil {
 			if !errors.Is(err, tenant.ErrUnauthorized) {
@@ -214,6 +296,25 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="agent-fabrik"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
+		}
+		// A disabled tenant is locked out of every route, not only runs: it
+		// must not upload files, mint keys or change its config either. The
+		// admin (also acting as a tenant via X-Tenant) is deliberately not,
+		// so it can inspect and re-enable the tenant.
+		if !admin && p.Tenant != tenant.System {
+			t, err := s.m.Tenant(r.Context(), p.Tenant)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			case err != nil:
+				slog.Warn("tenant lookup failed", "tenant", p.Tenant, "err", err)
+				writeError(w, http.StatusServiceUnavailable, "tenant store unavailable")
+				return
+			case t.Disabled:
+				writeError(w, http.StatusForbidden, tenant.ErrDisabled.Error())
+				return
+			}
 		}
 		if p.Scope == store.ScopeRun && !runRoutes[r.Pattern] {
 			writeError(w, http.StatusForbidden, "this key may only run agents")
@@ -227,9 +328,11 @@ func (s *Server) auth(next http.Handler) http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	timedWrite(w, func() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(v)
+	})
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -464,8 +567,10 @@ func (s *Server) streamRun(w http.ResponseWriter, r *http.Request, id, name stri
 	}()
 	send := func(event string, v any) {
 		b, _ := json.Marshal(v)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
-		flusher.Flush()
+		timedWrite(w, func() {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+			flusher.Flush()
+		})
 	}
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
@@ -476,8 +581,10 @@ func (s *Server) streamRun(w http.ResponseWriter, r *http.Request, id, name stri
 				send(e.Type, e)
 			}
 		case <-ping.C:
-			io.WriteString(w, ": ping\n\n")
-			flusher.Flush()
+			timedWrite(w, func() {
+				io.WriteString(w, ": ping\n\n")
+				flusher.Flush()
+			})
 		case o := <-done:
 			for len(events) > 0 {
 				if e := <-events; e.Type != "done" {

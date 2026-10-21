@@ -718,18 +718,25 @@ func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.
 		return nil, ErrDisabled
 	}
 	lim := m.Limits(t)
+	budget := func(ctx context.Context) error {
+		if lim.MonthlyTokens <= 0 {
+			return nil
+		}
+		used, err := m.usedTokens(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if used >= lim.MonthlyTokens {
+			return ErrQuotaExceeded
+		}
+		return nil
+	}
 	if tenantID != System {
 		if !m.allow(tenantID, config.PerReplica(lim.RunsPerMinute, m.cfg.Tenancy.Replicas)) {
 			return nil, ErrRateLimited
 		}
-		if lim.MonthlyTokens > 0 {
-			used, err := m.usedTokens(ctx, tenantID)
-			if err != nil {
-				return nil, err
-			}
-			if used >= lim.MonthlyTokens {
-				return nil, ErrQuotaExceeded
-			}
+		if err := budget(ctx); err != nil {
+			return nil, err
 		}
 	}
 	a, release, err := m.Acquire(ctx, tenantID)
@@ -737,25 +744,36 @@ func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.
 		return nil, err
 	}
 	defer release()
-	var gate func(context.Context) (func(), error)
+	var gate func(context.Context) (func(*agent.RunResult), error)
 	if tenantID != System {
 		// The tenant's own slot is taken first (inside RunThen), the shared
 		// one only after it: a run waiting on its tenant's cap holds nothing
 		// other tenants need.
-		gate = func(ctx context.Context) (func(), error) {
+		gate = func(ctx context.Context) (func(*agent.RunResult), error) {
 			select {
 			case m.global <- struct{}{}:
-				return func() { <-m.global }, nil
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
+			// Checked again with both slots held: runs queued behind the
+			// tenant's cap all passed the first check, and the ones ahead of
+			// this run may have spent the budget meanwhile. What can still
+			// overshoot is bounded by the runs in flight at once.
+			if err := budget(ctx); err != nil {
+				<-m.global
+				return nil, err
+			}
+			// Usage is recorded while the tenant's slot is still held, so
+			// the run queued behind it counts these tokens in its check.
+			return func(res *agent.RunResult) {
+				if res != nil {
+					m.recordUsage(tenantID, res.Usage)
+				}
+				<-m.global
+			}, nil
 		}
 	}
-	res, err := a.RunThen(ctx, agentName, in, gate)
-	if res != nil && tenantID != System {
-		m.recordUsage(tenantID, res.Usage)
-	}
-	return res, err
+	return a.RunThen(ctx, agentName, in, gate)
 }
 
 // env adapts a tenant for the scheduler.

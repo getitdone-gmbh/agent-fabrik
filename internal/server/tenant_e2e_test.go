@@ -28,6 +28,7 @@ type recorder struct {
 	mu        sync.Mutex
 	auth      []string
 	scheduled atomic.Int64
+	delay     atomic.Int64 // ns per LLM call, for tests that need runs to queue
 	inner     http.Handler
 }
 
@@ -40,6 +41,7 @@ func (rc *recorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rc.scheduled.Add(1)
 	}
 	r.Body = io.NopCloser(strings.NewReader(string(b)))
+	time.Sleep(time.Duration(rc.delay.Load()))
 	rc.inner.ServeHTTP(w, r)
 }
 
@@ -113,6 +115,11 @@ tenancy:
     pro:
       max_agents: 50
       runs_per_minute: 1000
+    budget:
+      max_agents: 2
+      max_concurrent_runs: 1
+      runs_per_minute: 1000
+      monthly_tokens: 20
     tiny:
       max_agents: 2
       runs_per_minute: 1000

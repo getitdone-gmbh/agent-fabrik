@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -316,7 +317,12 @@ func (s *Server) newKey(w http.ResponseWriter, r *http.Request, id string) {
 		Scope  string   `json:"scope"`
 		Agents []string `json:"agents"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	// An empty body creates a default (admin) key; a body that does not
+	// parse must not: {"scope":123} used to fall through to scope admin.
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
 	plain, k, err := s.m.CreateKey(r.Context(), id, tenant.KeyOptions{Name: body.Name, Scope: body.Scope, Agents: body.Agents})
 	if err != nil {
 		fail(w, err)
@@ -512,7 +518,9 @@ func (s *Server) getFile(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	// The slot is shared by all tenants: a client that never reads must not
 	// keep it.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(fileTransferTimeout))
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(fileTransferTimeout))
+	defer rc.SetWriteDeadline(time.Time{}) // must not outlive this response on a keep-alive connection
 	info, data, err := f.Get(r.Context(), r.PathValue("path"))
 	if err != nil {
 		fail(w, err)
