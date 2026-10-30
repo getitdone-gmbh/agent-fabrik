@@ -268,3 +268,18 @@ agents:
 		}
 	}
 }
+
+func TestTenantAgentWithoutProviderKeepsDefault(t *testing.T) {
+	lim := DefaultLimits()
+	doc := "agents:\n  a: {system: hi}\n"
+	c, err := ParseWith([]byte(doc), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"default", "qwen"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Agents["a"].Provider; got != "default" {
+		t.Errorf("provider = %q, want default", got)
+	}
+	if _, err := ParseWith([]byte(doc), ParseOptions{Tenant: true, Limits: &lim, ExtraProviders: []string{"a", "b"}}); err == nil {
+		t.Error("two shared providers without a default must still require a provider")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,11 @@ import (
 	"github.com/getitdone-gmbh/agent-fabrik/internal/agent"
 	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 )
+
+// DefaultSharedProvider is the shared provider a tenant agent without an
+// explicit provider runs on when several are offered (the built-in config
+// names its operator provider "default").
+const DefaultSharedProvider = "default"
 
 // Config is the root configuration document.
 type Config struct {
@@ -265,6 +271,11 @@ func (c *Config) validate(opts ParseOptions) error {
 		if a.Provider == "" {
 			if len(c.Providers) == 0 && len(opts.ExtraProviders) == 1 {
 				a.Provider = opts.ExtraProviders[0]
+				c.Agents[name] = a
+			} else if len(c.Providers) == 0 && slices.Contains(opts.ExtraProviders, DefaultSharedProvider) {
+				// A second shared provider must not break every tenant
+				// agent that was saved without one: they keep the default.
+				a.Provider = DefaultSharedProvider
 				c.Agents[name] = a
 			} else if len(c.Providers) == 1 {
 				for p := range c.Providers {
