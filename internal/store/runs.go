@@ -54,7 +54,7 @@ const (
 
 // RunFilter selects runs of one tenant ("" or "*" with AllTenants).
 type RunFilter struct {
-	Agent      string
+	Agent string
 	// SessionID selects one conversation. Its runs come with the full
 	// question and answer (no preview), so the conversation can be read.
 	SessionID  string
