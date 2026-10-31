@@ -119,6 +119,18 @@ CREATE TABLE IF NOT EXISTS ar_runs (
 );
 CREATE INDEX IF NOT EXISTS ar_runs_tenant ON ar_runs(tenant_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS ar_runs_started ON ar_runs(started_at);
+ALTER TABLE ar_runs ADD COLUMN IF NOT EXISTS error_kind text NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS ar_alerts (
+  tenant_id text NOT NULL,
+  agent text NOT NULL,
+  kind text NOT NULL,
+  severity text NOT NULL DEFAULT '',
+  summary text NOT NULL DEFAULT '',
+  run_id text NOT NULL DEFAULT '',
+  since timestamptz NOT NULL,
+  last_seen timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, agent, kind)
+);
 `
 
 // NewPostgres connects and migrates the schema.
@@ -269,7 +281,10 @@ func (p *Postgres) DeleteTenant(ctx context.Context, id string) error {
 	}
 	// ar_runs has no foreign key: the system tenant records runs too and
 	// has no row in ar_tenants.
-	_, err = p.db.ExecContext(ctx, `DELETE FROM ar_runs WHERE tenant_id=$1`, id)
+	if _, err = p.db.ExecContext(ctx, `DELETE FROM ar_runs WHERE tenant_id=$1`, id); err != nil {
+		return err
+	}
+	_, err = p.db.ExecContext(ctx, `DELETE FROM ar_alerts WHERE tenant_id=$1`, id)
 	return err
 }
 
@@ -700,19 +715,19 @@ func (p *Postgres) RecordRun(ctx context.Context, r Run) error {
 		return err
 	}
 	_, err = p.db.ExecContext(ctx, `INSERT INTO ar_runs (id, tenant_id, agent, source, session_id, status, error, input, images, output, trace,
-		steps, tool_calls, tool_errors, input_tokens, output_tokens, duration_ms, started_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		steps, tool_calls, tool_errors, input_tokens, output_tokens, duration_ms, started_at, error_kind)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		r.ID, r.TenantID, r.Agent, r.Source, r.SessionID, r.Status, r.Error, r.Input, r.Images, r.Output, trace,
-		r.Steps, r.ToolCalls, r.ToolErrors, r.InputTokens, r.OutputTokens, r.DurationMS, r.StartedAt)
+		r.Steps, r.ToolCalls, r.ToolErrors, r.InputTokens, r.OutputTokens, r.DurationMS, r.StartedAt, r.ErrorKind)
 	return err
 }
 
 const runColumns = `id, tenant_id, agent, source, session_id, status, error, %s, images, %s,
-	steps, tool_calls, tool_errors, input_tokens, output_tokens, duration_ms, started_at`
+	steps, tool_calls, tool_errors, input_tokens, output_tokens, duration_ms, started_at, error_kind`
 
 func scanRun(sc interface{ Scan(...any) error }, r *Run, extra ...any) error {
 	return sc.Scan(append([]any{&r.ID, &r.TenantID, &r.Agent, &r.Source, &r.SessionID, &r.Status, &r.Error, &r.Input, &r.Images, &r.Output,
-		&r.Steps, &r.ToolCalls, &r.ToolErrors, &r.InputTokens, &r.OutputTokens, &r.DurationMS, &r.StartedAt}, extra...)...)
+		&r.Steps, &r.ToolCalls, &r.ToolErrors, &r.InputTokens, &r.OutputTokens, &r.DurationMS, &r.StartedAt, &r.ErrorKind}, extra...)...)
 }
 
 func (p *Postgres) ListRuns(ctx context.Context, tenant string, f RunFilter) ([]Run, error) {
@@ -776,4 +791,98 @@ func (p *Postgres) PruneRuns(ctx context.Context, before time.Time) (int64, erro
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// maxStatRuns bounds how many runs one stats request reads. Aggregating in
+// Go keeps both backends identical; a tenant with more runs than this in
+// the window gets the newest ones.
+const maxStatRuns = 200_000
+
+// statRuns reads the numeric columns of runs since t, newest first.
+func (p *Postgres) statRuns(ctx context.Context, where string, args ...any) ([]Run, error) {
+	rows, err := p.db.QueryContext(ctx, `SELECT id, tenant_id, agent, status, left(error, 500), error_kind, tool_calls, tool_errors,
+		input_tokens, output_tokens, duration_ms, started_at FROM ar_runs WHERE `+where+
+		fmt.Sprintf(` ORDER BY started_at DESC LIMIT %d`, maxStatRuns), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Run
+	for rows.Next() {
+		var r Run
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Agent, &r.Status, &r.Error, &r.ErrorKind, &r.ToolCalls, &r.ToolErrors,
+			&r.InputTokens, &r.OutputTokens, &r.DurationMS, &r.StartedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) RunStats(ctx context.Context, tenant, agent string, since time.Time) (*RunStats, error) {
+	where, args := `tenant_id=$1 AND started_at >= $2`, []any{tenant, since}
+	if agent != "" {
+		where, args = where+` AND agent=$3`, append(args, agent)
+	}
+	runs, err := p.statRuns(ctx, where, args...)
+	if err != nil {
+		return nil, err
+	}
+	return statsOf(runs, since), nil
+}
+
+func (p *Postgres) RunHealth(ctx context.Context, since time.Time) ([]AgentHealth, error) {
+	runs, err := p.statRuns(ctx, `started_at >= $1`, since)
+	if err != nil {
+		return nil, err
+	}
+	by := map[string]*AgentHealth{}
+	var out []AgentHealth
+	for i := range runs { // newest first, for LastFailedID
+		r := &runs[i]
+		k := r.TenantID + "/" + r.Agent
+		if by[k] == nil {
+			by[k] = &AgentHealth{TenantID: r.TenantID, Agent: r.Agent}
+		}
+		r.health(by[k])
+	}
+	for _, h := range by {
+		out = append(out, *h)
+	}
+	return out, nil
+}
+
+func (p *Postgres) ListAlerts(ctx context.Context, tenant string, all bool) ([]Alert, error) {
+	q := `SELECT tenant_id, agent, kind, severity, summary, run_id, since, last_seen FROM ar_alerts`
+	var args []any
+	if !all {
+		q, args = q+` WHERE tenant_id=$1`, []any{tenant}
+	}
+	rows, err := p.db.QueryContext(ctx, q+` ORDER BY since DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Alert{}
+	for rows.Next() {
+		var a Alert
+		if err := rows.Scan(&a.TenantID, &a.Agent, &a.Kind, &a.Severity, &a.Summary, &a.RunID, &a.Since, &a.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) PutAlert(ctx context.Context, a Alert) error {
+	_, err := p.db.ExecContext(ctx, `INSERT INTO ar_alerts (tenant_id, agent, kind, severity, summary, run_id, since, last_seen)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (tenant_id, agent, kind) DO UPDATE SET severity=$4, summary=$5, run_id=$6, last_seen=$8`,
+		a.TenantID, a.Agent, a.Kind, a.Severity, clip(a.Summary, maxTraceText), a.RunID, a.Since, a.LastSeen)
+	return err
+}
+
+func (p *Postgres) DeleteAlert(ctx context.Context, tenant, agent, kind string) error {
+	_, err := p.db.ExecContext(ctx, `DELETE FROM ar_alerts WHERE tenant_id=$1 AND agent=$2 AND kind=$3`, tenant, agent, kind)
+	return err
 }

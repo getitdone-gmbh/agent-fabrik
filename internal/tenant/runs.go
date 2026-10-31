@@ -103,7 +103,10 @@ func (m *Manager) finish(r *recorder, res *agent.RunResult, err error) {
 		run.DurationMS = time.Since(run.StartedAt).Milliseconds()
 	}
 	if err != nil {
-		run.Status, run.Error = store.RunError, err.Error()
+		run.Status, run.Error, run.ErrorKind = store.RunError, err.Error(), "other"
+		if res != nil && res.ErrorKind != "" {
+			run.ErrorKind = res.ErrorKind
+		}
 	}
 
 	a := run.Agent

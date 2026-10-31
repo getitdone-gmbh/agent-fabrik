@@ -74,6 +74,9 @@ type RunResult struct {
 	StopReason string    `json:"stop_reason"`
 	Usage      llm.Usage `json:"usage"`
 	DurationMS int64     `json:"duration_ms"`
+	// ErrorKind classifies a failed model call (see ErrorKind), for the run
+	// log and alerts. Empty when the run did not fail at the model.
+	ErrorKind string `json:"-"`
 }
 
 // Agent runs a model with tools.
@@ -222,7 +225,8 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 			Temperature: a.cfg.Temperature,
 		})
 		if err != nil {
-			metrics.LLMErrors.Inc(a.provider.Name(), llmErrorKind(err))
+			res.ErrorKind = ErrorKind(err)
+			metrics.LLMErrors.Inc(a.provider.Name(), res.ErrorKind)
 			metrics.RunsFailed.Add(1)
 			emit(Event{Type: "error", Text: err.Error()})
 			res.DurationMS = time.Since(start).Milliseconds()
@@ -271,9 +275,9 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 	return res, nil
 }
 
-// llmErrorKind classifies a failed model call for alerting: "auth" needs a
+// ErrorKind classifies a failed model call for alerting: "auth" needs a
 // new key, "network" and "timeout" usually mean the endpoint is down.
-func llmErrorKind(err error) string {
+func ErrorKind(err error) string {
 	var ae *llm.APIError
 	switch {
 	case errors.As(err, &ae):
@@ -341,7 +345,7 @@ func (a *Agent) callTool(ctx context.Context, tc llm.ToolCall) (text string, err
 			a.log.Error("tool panic", "tool", tc.Name, "panic", r)
 		}
 	}()
-	tctx, cancel := context.WithTimeout(ctx, time.Duration(a.cfg.ToolTimeoutSec)*time.Second)
+	tctx, cancel := context.WithTimeout(tools.WithCall(ctx, tools.Call{Agent: a.cfg.Name}), time.Duration(a.cfg.ToolTimeoutSec)*time.Second)
 	defer cancel()
 	start := time.Now()
 	text, err = t.Handler(tctx, tc.Arguments)

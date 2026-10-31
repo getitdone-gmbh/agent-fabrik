@@ -53,6 +53,8 @@ type Options struct {
 	MaxSteps int
 	// Files, when set, adds the built-in "files" connector (tenant storage).
 	Files tools.FilesBackend
+	// Extra connectors added before the configured ones (e.g. "notify").
+	Extra []tools.Connector
 }
 
 // Build constructs the app from config.
@@ -106,6 +108,11 @@ func BuildWith(ctx context.Context, cfg *config.Config, log *slog.Logger, opts O
 	}
 	if opts.Files != nil {
 		if err := a.Registry.Add(ctx, tools.NewFiles("files", opts.Files)); err != nil {
+			return nil, err
+		}
+	}
+	for _, c := range opts.Extra {
+		if err := a.Registry.Add(ctx, c); err != nil {
 			return nil, err
 		}
 	}
