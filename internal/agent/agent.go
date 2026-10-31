@@ -58,7 +58,7 @@ type Event struct {
 // RunInput is a request to run an agent.
 type RunInput struct {
 	Input     string
-	Images    []llm.Image // sent with Input, not stored (see llm.WithoutImages)
+	Images    []llm.Image   // sent with Input, not stored (see llm.WithoutImages)
 	SessionID string        // continue a conversation; empty starts a new one
 	History   []llm.Message // explicit history (used instead of the store when set)
 	OnEvent   func(Event)
