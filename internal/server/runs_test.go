@@ -113,6 +113,32 @@ agents:
 		t.Errorf("admin detail: %d", code)
 	}
 
+	code, out = e.call(t, acmeKey, "GET", "/v1/stats?days=7", "")
+	totals, _ := out["totals"].(map[string]any)
+	if code != 200 || totals["runs"] != float64(2) || totals["failed"] != float64(1) || len(out["agents"].([]any)) != 2 || len(out["days"].([]any)) != 1 {
+		t.Errorf("stats: %d %v", code, out)
+	}
+	if _, out := e.call(t, acmeKey, "GET", "/v1/stats?agent=helper", ""); out["totals"].(map[string]any)["runs"] != float64(1) {
+		t.Errorf("stats by agent: %v", out)
+	}
+	if _, out := e.call(t, betaKey, "GET", "/v1/stats", ""); out["totals"].(map[string]any)["runs"] != float64(0) {
+		t.Errorf("other tenant sees stats: %v", out)
+	}
+	if code, _ := e.call(t, acmeKey, "GET", "/v1/stats?days=99", ""); code != 400 {
+		t.Errorf("days=99: %d", code)
+	}
+	if code, out := e.call(t, acmeKey, "GET", "/v1/alerts", ""); code != 200 || out["alerts"] == nil {
+		t.Errorf("alerts: %d %v", code, out)
+	}
+	for _, p := range []string{"/v1/stats", "/v1/alerts"} {
+		if code, _ := e.call(t, runKey, "GET", p, ""); code != 403 {
+			t.Errorf("run key reached %s: %d", p, code)
+		}
+	}
+	if code, _ := e.call(t, acmeKey, "GET", "/v1/alerts?tenant=*", ""); code != 403 {
+		t.Errorf("tenant used the admin alert overview: %d", code)
+	}
+
 	resp, err := http.Get(e.url + "/metrics")
 	if err != nil {
 		t.Fatal(err)

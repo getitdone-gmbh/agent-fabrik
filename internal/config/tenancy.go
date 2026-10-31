@@ -32,6 +32,9 @@ type TenancyConfig struct {
 	// RunLogDays keeps a record of every agent run (input, tool calls,
 	// answer) for this many days. Default 30; negative disables the log.
 	RunLogDays int `yaml:"run_log_days"`
+	// Notify posts alerts and agent messages to the operator's platform,
+	// which tells the tenant's owner (see internal/notify).
+	Notify NotifyConfig `yaml:"notify"`
 	// Replicas is the number of runtime replicas. Rate and concurrency
 	// limits are counted per process, so each replica enforces its share
 	// (limit / replicas, rounded up) and the tenant gets the plan's total.
@@ -353,3 +356,15 @@ func (t TenancyConfig) PlanLimits(plan string) Limits {
 func (t TenancyConfig) IdleTTL() time.Duration       { return dur(t.RuntimeIdleTTL, 10*time.Minute) }
 func (t TenancyConfig) SessionTTLDur() time.Duration { return dur(t.SessionTTL, 24*time.Hour) }
 func (a ExternalAuthConfig) TTL() time.Duration      { return dur(a.CacheTTL, 5*time.Minute) }
+
+// NotifyConfig configures owner notifications. Without a URL there are no
+// alerts to owners and agents get no notify tool.
+type NotifyConfig struct {
+	URL   string `yaml:"url"`
+	Token string `yaml:"token"`
+	// TokenSpikePerHour: an agent using more tokens than this in an hour is
+	// reported (default 2,000,000).
+	TokenSpikePerHour int64 `yaml:"token_spike_per_hour"`
+	// MessagesPerDay caps notify.send per agent and replica (default 5).
+	MessagesPerDay int `yaml:"messages_per_day"`
+}

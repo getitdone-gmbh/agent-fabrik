@@ -243,6 +243,8 @@ tenant, reached with the admin token.
 | `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | runtime API keys (`ark_...`, stored hashed); `POST {"name","scope":"run","agents":[...]}` issues a key that can only run (those) agents, for app backends |
 | `GET/PUT/DELETE /v1/files/{path}` | per-tenant file storage (see [Files](#files)) |
 | `GET /v1/runs`, `GET /v1/runs/{id}` | run log (see [Run log and monitoring](#run-log-and-monitoring)) |
+| `GET /v1/stats[?agent=&days=7]` | totals, per day and per agent from the run log |
+| `GET /v1/alerts` | problems the alert checker currently sees |
 | `POST /v1/tenants/{tenant}/hooks/{agent}[/{name}]` | tenant webhooks |
 | all routes under [API](#api) | scoped to the caller's tenant |
 
@@ -392,6 +394,47 @@ curl $RT/v1/runs/run_3f2a... -H "Authorization: Bearer $KEY"
   operator can. The admin token sees every tenant with `?tenant=*`.
 - Runs refused before they start (rate limit, quota) are not logged, only
   counted.
+
+`GET /v1/stats?days=7` sums the log up for dashboards: runs, successful
+and failed ones, tool errors, tokens, average and p95 duration, as totals,
+per UTC day and per agent.
+
+### Owner alerts and the notify tool
+
+With `tenancy.notify.url` set, the leader checks every agent every five
+minutes and tells its owner when it stops doing its job:
+
+| Kind | When |
+|---|---|
+| `runs_failing` | at least 3 failed runs and more than half of them in 30 minutes |
+| `tool_errors` | at least 5 failed tool calls and more than half of them in 30 minutes |
+| `llm_auth` | the model provider rejected the key (10 minutes) |
+| `llm_unreachable` | the model did not answer in 3 runs within 10 minutes |
+| `token_spike` | more than `notify.token_spike_per_hour` tokens (default 2,000,000) in an hour |
+
+A problem is reported once, when it starts, and again when the agent works
+normally (`resolved`). An agent nobody uses keeps its alert for 24 hours,
+then it is dropped without a message. `GET /v1/alerts` lists what is active.
+
+Agents also get a `notify` connector: with `tools: ["notify.*"]` an agent
+can call `notify__send {subject, message, severity}` to tell its owner
+something a human has to act on (a customer wants a callback, information
+is missing). It is capped at `notify.messages_per_day` (default 5) per agent
+and replica.
+
+agent-fabrik sends no mail itself. It posts each event as JSON to
+`notify.url` with `Authorization: Bearer <notify.token>`, and the operator's
+platform, which knows the tenant's owner, delivers it:
+
+```json
+{"type": "alert", "tenant": "itd-42", "agent": "support", "kind": "runs_failing",
+ "severity": "warning", "subject": "Agent support fails most of its runs",
+ "text": "4 of 5 runs failed in the last 30 minutes. Last error: ...",
+ "run_id": "run_3f2a...", "at": "2026-10-31T12:00:00Z"}
+```
+
+`type` is `alert`, `resolved` or `message`. Failed deliveries are retried
+on the next round.
 
 `/metrics` has per-agent counters for alerts and dashboards:
 

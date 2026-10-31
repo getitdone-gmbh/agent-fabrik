@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,6 +20,7 @@ type Run struct {
 	SessionID    string      `json:"session_id,omitempty"`
 	Status       string      `json:"status"` // ok, max_steps, error
 	Error        string      `json:"error,omitempty"`
+	ErrorKind    string      `json:"error_kind,omitempty"` // auth, network, timeout, server, throttled, client, other
 	Input        string      `json:"input"`
 	Images       int         `json:"images,omitempty"` // attached images (not stored)
 	Output       string      `json:"output"`
@@ -68,6 +70,115 @@ type RunStore interface {
 	GetRun(ctx context.Context, tenant, id string) (*Run, error)
 	// PruneRuns deletes runs started before t and returns how many.
 	PruneRuns(ctx context.Context, before time.Time) (int64, error)
+
+	// RunStats aggregates a tenant's runs since t, per day and per agent
+	// (agent "" = all agents).
+	RunStats(ctx context.Context, tenant, agent string, since time.Time) (*RunStats, error)
+	// RunHealth aggregates the runs of every tenant and agent since t, for
+	// the alert checker.
+	RunHealth(ctx context.Context, since time.Time) ([]AgentHealth, error)
+
+	// Alerts are the problems the checker found and has notified about.
+	ListAlerts(ctx context.Context, tenant string, all bool) ([]Alert, error)
+	PutAlert(ctx context.Context, a Alert) error
+	DeleteAlert(ctx context.Context, tenant, agent, kind string) error
+}
+
+// RunTotals sums up runs.
+type RunTotals struct {
+	Runs         int64 `json:"runs"`
+	OK           int64 `json:"ok"`
+	Failed       int64 `json:"failed"` // error or max_steps
+	ToolCalls    int64 `json:"tool_calls"`
+	ToolErrors   int64 `json:"tool_errors"`
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	AvgMS        int64 `json:"avg_ms"`
+	P95MS        int64 `json:"p95_ms"`
+}
+
+// DayStats is one UTC day.
+type DayStats struct {
+	Date string `json:"date"` // YYYY-MM-DD
+	RunTotals
+}
+
+// AgentStats is one agent's totals.
+type AgentStats struct {
+	Agent string `json:"agent"`
+	RunTotals
+	LastRunAt time.Time `json:"last_run_at"`
+}
+
+// RunStats is the answer of GET /v1/stats.
+type RunStats struct {
+	Since  time.Time    `json:"since"`
+	Totals RunTotals    `json:"totals"`
+	Days   []DayStats   `json:"days"`
+	Agents []AgentStats `json:"agents"`
+}
+
+// AgentHealth is what the alert checker looks at for one agent.
+type AgentHealth struct {
+	TenantID     string
+	Agent        string
+	Runs         int64
+	OK           int64
+	Failed       int64
+	ToolCalls    int64
+	ToolErrors   int64
+	Tokens       int64
+	AuthErrors   int64 // model rejected the key
+	ReachErrors  int64 // model unreachable: network, timeout, server
+	LastFailedID string
+	LastError    string
+}
+
+// Alert is an active problem of one agent.
+type Alert struct {
+	TenantID string    `json:"tenant_id"`
+	Agent    string    `json:"agent"`
+	Kind     string    `json:"kind"` // runs_failing, tool_errors, llm_auth, llm_unreachable, token_spike
+	Severity string    `json:"severity"`
+	Summary  string    `json:"summary"`
+	RunID    string    `json:"run_id,omitempty"`
+	Since    time.Time `json:"since"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+// Health applies the run log's error classes to a run.
+func (r *Run) health(h *AgentHealth) {
+	h.Runs++
+	if r.Status == RunOK {
+		h.OK++
+	} else {
+		h.Failed++
+		if h.LastFailedID == "" {
+			h.LastFailedID, h.LastError = r.ID, r.Error
+		}
+	}
+	h.ToolCalls += int64(r.ToolCalls)
+	h.ToolErrors += int64(r.ToolErrors)
+	h.Tokens += int64(max(r.InputTokens, 0) + max(r.OutputTokens, 0))
+	switch r.ErrorKind {
+	case "auth":
+		h.AuthErrors++
+	case "network", "timeout", "server":
+		h.ReachErrors++
+	}
+}
+
+func (t *RunTotals) add(r *Run) {
+	t.Runs++
+	if r.Status == RunOK {
+		t.OK++
+	} else {
+		t.Failed++
+	}
+	t.ToolCalls += int64(r.ToolCalls)
+	t.ToolErrors += int64(r.ToolErrors)
+	t.InputTokens += int64(max(r.InputTokens, 0))
+	t.OutputTokens += int64(max(r.OutputTokens, 0))
 }
 
 // Size caps for a stored run. A run may carry 32 MiB of input and tool
@@ -146,4 +257,60 @@ func (f RunFilter) match(r *Run) bool {
 		}
 	}
 	return f.Before.IsZero() || r.StartedAt.Before(f.Before)
+}
+
+// finish sets AvgMS and P95MS from the durations of the runs counted.
+func (t *RunTotals) finish(ms []int64) {
+	if len(ms) == 0 {
+		return
+	}
+	sort.Slice(ms, func(i, j int) bool { return ms[i] < ms[j] })
+	var sum int64
+	for _, d := range ms {
+		sum += d
+	}
+	t.AvgMS = sum / int64(len(ms))
+	t.P95MS = ms[(len(ms)*95+99)/100-1]
+}
+
+// statsOf aggregates runs (any order) the same way both backends do.
+func statsOf(runs []Run, since time.Time) *RunStats {
+	st := &RunStats{Since: since, Days: []DayStats{}, Agents: []AgentStats{}}
+	var all []int64
+	days := map[string]*DayStats{}
+	dayMS := map[string][]int64{}
+	agents := map[string]*AgentStats{}
+	agentMS := map[string][]int64{}
+	for i := range runs {
+		r := &runs[i]
+		st.Totals.add(r)
+		all = append(all, r.DurationMS)
+		d := r.StartedAt.UTC().Format("2006-01-02")
+		if days[d] == nil {
+			days[d] = &DayStats{Date: d}
+		}
+		days[d].add(r)
+		dayMS[d] = append(dayMS[d], r.DurationMS)
+		if agents[r.Agent] == nil {
+			agents[r.Agent] = &AgentStats{Agent: r.Agent}
+		}
+		a := agents[r.Agent]
+		a.add(r)
+		if r.StartedAt.After(a.LastRunAt) {
+			a.LastRunAt = r.StartedAt
+		}
+		agentMS[r.Agent] = append(agentMS[r.Agent], r.DurationMS)
+	}
+	st.Totals.finish(all)
+	for d, s := range days {
+		s.finish(dayMS[d])
+		st.Days = append(st.Days, *s)
+	}
+	sort.Slice(st.Days, func(i, j int) bool { return st.Days[i].Date < st.Days[j].Date })
+	for n, a := range agents {
+		a.finish(agentMS[n])
+		st.Agents = append(st.Agents, *a)
+	}
+	sort.Slice(st.Agents, func(i, j int) bool { return st.Agents[i].Agent < st.Agents[j].Agent })
+	return st
 }

@@ -150,3 +150,30 @@ func Schema(props map[string]any, required ...string) json.RawMessage {
 func Prop(typ, desc string) map[string]any {
 	return map[string]any{"type": typ, "description": desc}
 }
+
+type callKey struct{}
+
+// Call says which agent and run a tool handler serves.
+type Call struct {
+	Agent string
+	RunID string
+}
+
+// WithCall stores the caller in ctx; handlers read it with CallFrom.
+func WithCall(ctx context.Context, c Call) context.Context {
+	if old, ok := ctx.Value(callKey{}).(Call); ok {
+		if c.Agent == "" {
+			c.Agent = old.Agent
+		}
+		if c.RunID == "" {
+			c.RunID = old.RunID
+		}
+	}
+	return context.WithValue(ctx, callKey{}, c)
+}
+
+// CallFrom returns the caller stored by WithCall.
+func CallFrom(ctx context.Context) Call {
+	c, _ := ctx.Value(callKey{}).(Call)
+	return c
+}

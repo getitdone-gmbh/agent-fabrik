@@ -258,7 +258,7 @@ func (c *Config) validate(opts ParseOptions) error {
 		if !nameRe.MatchString(name) {
 			errs = append(errs, fmt.Sprintf("connector name %q must match %s", name, nameRe))
 		}
-		if name == "system" || name == "files" {
+		if name == "system" || name == "files" || name == "notify" {
 			errs = append(errs, fmt.Sprintf("connector name %q is reserved for the built-in connector", name))
 		}
 		if c.Connectors[name].Type == "shell" && c.Tenancy.Enabled {
