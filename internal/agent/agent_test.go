@@ -220,3 +220,38 @@ func TestSessionLocksAreReleased(t *testing.T) {
 		t.Errorf("leaked %d session locks", len(a.locks))
 	}
 }
+
+func TestImagesReachModelButNotStore(t *testing.T) {
+	p := &scripted{steps: []llm.Response{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "Ein Kratzer am Lack."}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "Etwa 200 Euro."}},
+	}}
+	a, _ := newTestAgent(t, p, Config{})
+	img := llm.Image{MediaType: "image/png", Data: "AAAA"}
+	res, err := a.Run(context.Background(), RunInput{Input: "Was ist das?", Images: []llm.Image{img}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.reqs[0].Messages[0].Images; len(got) != 1 || got[0] != img {
+		t.Fatalf("model did not get the image: %+v", p.reqs[0].Messages[0])
+	}
+	stored, _ := a.store.Load(context.Background(), "test", res.SessionID)
+	if len(stored) == 0 || stored[0].Images != nil {
+		t.Fatalf("image was stored: %+v", stored)
+	}
+	// The follow-up turn sees the note, not the picture again.
+	if _, err := a.Run(context.Background(), RunInput{Input: "Was kostet das?", SessionID: res.SessionID}); err != nil {
+		t.Fatal(err)
+	}
+	if m := p.reqs[1].Messages[0]; m.Images != nil || m.Content == "Was ist das?" {
+		t.Errorf("second turn: %+v", m)
+	}
+}
+
+func TestImageOnlyInput(t *testing.T) {
+	p := &scripted{steps: []llm.Response{{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}}}
+	a, _ := newTestAgent(t, p, Config{})
+	if _, err := a.Run(context.Background(), RunInput{Images: []llm.Image{{MediaType: "image/png", Data: "AAAA"}}}); err != nil {
+		t.Fatalf("image without text must run: %v", err)
+	}
+}

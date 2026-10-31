@@ -48,6 +48,13 @@ type anthBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	Source    *anthSource     `json:"source,omitempty"`
+}
+
+type anthSource struct {
+	Type      string `json:"type"` // base64
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthMessage struct {
@@ -160,7 +167,13 @@ func toAnthropicMessages(msgs []Message) []anthMessage {
 	for _, m := range msgs {
 		switch m.Role {
 		case RoleUser:
-			pending = append(pending, anthBlock{Type: "text", Text: m.Content})
+			// Images first: Anthropic recommends the picture before the question.
+			for _, img := range m.Images {
+				pending = append(pending, anthBlock{Type: "image", Source: &anthSource{Type: "base64", MediaType: img.MediaType, Data: img.Data}})
+			}
+			if m.Content != "" || len(m.Images) == 0 {
+				pending = append(pending, anthBlock{Type: "text", Text: m.Content})
+			}
 		case RoleTool:
 			content := m.Content
 			if content == "" {

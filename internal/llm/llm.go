@@ -33,6 +33,9 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content,omitempty"`
 
+	// User turns: pictures sent along with Content (see ParseImage).
+	Images []Image `json:"images,omitempty"`
+
 	// Assistant turns.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 

@@ -47,6 +47,9 @@ type ServerConfig struct {
 	OpenAI            *bool    `yaml:"openai_api"` // serve /v1/chat/completions (default true)
 	UI                *bool    `yaml:"ui"`         // serve the web UI at /ui/ (default true)
 	MaxBodyBytes      int64    `yaml:"max_body_bytes"`
+	// MaxRunBodyBytes caps agent runs and chat completions, which may carry
+	// images (llm.MaxImages x llm.MaxImageBytes, base64). Default 32 MiB.
+	MaxRunBodyBytes int64 `yaml:"max_run_body_bytes"`
 }
 
 // Tokens returns all configured bearer tokens.
@@ -206,6 +209,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.MaxBodyBytes <= 0 {
 		c.Server.MaxBodyBytes = 1 << 20
+	}
+	if c.Server.MaxRunBodyBytes <= 0 {
+		c.Server.MaxRunBodyBytes = 32 << 20
 	}
 	for name, a := range c.Agents {
 		a.Name = name

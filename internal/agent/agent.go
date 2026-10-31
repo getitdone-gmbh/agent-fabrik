@@ -58,6 +58,7 @@ type Event struct {
 // RunInput is a request to run an agent.
 type RunInput struct {
 	Input     string
+	Images    []llm.Image // sent with Input, not stored (see llm.WithoutImages)
 	SessionID string        // continue a conversation; empty starts a new one
 	History   []llm.Message // explicit history (used instead of the store when set)
 	OnEvent   func(Event)
@@ -194,8 +195,8 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 	} else {
 		history = append(history, in.History...)
 	}
-	if strings.TrimSpace(in.Input) != "" {
-		history = append(history, llm.Message{Role: llm.RoleUser, Content: in.Input})
+	if strings.TrimSpace(in.Input) != "" || len(in.Images) > 0 {
+		history = append(history, llm.Message{Role: llm.RoleUser, Content: in.Input, Images: in.Images})
 	}
 	if len(history) == 0 {
 		return nil, errors.New("empty input")
@@ -256,7 +257,7 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 	}
 
 	if persist {
-		if err := a.store.Save(ctx, a.cfg.Name, sid, trimHistory(history, a.cfg.HistoryLimit)); err != nil {
+		if err := a.store.Save(ctx, a.cfg.Name, sid, trimHistory(llm.WithoutImages(history), a.cfg.HistoryLimit)); err != nil {
 			a.log.Warn("save session failed", "session", sid, "err", err)
 		}
 	}
