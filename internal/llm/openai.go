@@ -104,7 +104,7 @@ func (o *OpenAI) Chat(ctx context.Context, req Request) (*Response, error) {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleUser:
-			body.Messages = append(body.Messages, oaMessage{Role: "user", Content: jsonString(m.Content)})
+			body.Messages = append(body.Messages, oaMessage{Role: "user", Content: o.userContent(m)})
 		case RoleAssistant:
 			am := oaMessage{Role: "assistant", Content: jsonString(m.Content)}
 			for _, tc := range m.ToolCalls {
@@ -176,6 +176,27 @@ func (o *OpenAI) Chat(ctx context.Context, req Request) (*Response, error) {
 		StopReason: stop,
 		Usage:      Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens},
 	}, nil
+}
+
+// userContent is a plain string, or content parts when images ride along.
+// Mistral documents image_url as a bare string, OpenAI (and vLLM) as {url}.
+func (o *OpenAI) userContent(m Message) json.RawMessage {
+	if len(m.Images) == 0 {
+		return jsonString(m.Content)
+	}
+	parts := []map[string]any{}
+	if m.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, img := range m.Images {
+		var u any = map[string]string{"url": img.DataURL()}
+		if o.flavor == "mistral" {
+			u = img.DataURL()
+		}
+		parts = append(parts, map[string]any{"type": "image_url", "image_url": u})
+	}
+	b, _ := json.Marshal(parts)
+	return b
 }
 
 // decodeOAContent accepts a string or an array of content chunks.

@@ -298,7 +298,7 @@ All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>` (or
 |---|---|
 | `GET /healthz`, `/readyz`, `/metrics` | health, Prometheus metrics |
 | `GET /v1/agents`, `GET /v1/agents/{name}` | list / describe agents and their tools |
-| `POST /v1/agents/{name}/run` | `{"input": "...", "session_id": "...", "stream": false}` returns `{output, session_id, steps, tool_calls, usage, ...}` |
+| `POST /v1/agents/{name}/run` | `{"input": "...", "images": [...], "session_id": "...", "stream": false}` returns `{output, session_id, steps, tool_calls, usage, ...}` |
 | same with `"stream": true` or `Accept: text/event-stream` | SSE events `step`, `tool_call`, `tool_result`, `message`, `result`, `error` |
 | `DELETE /v1/agents/{name}/sessions/{id}` | forget a session |
 | `POST /v1/chat/completions`, `GET /v1/models` | OpenAI-compatible; `model` is the agent name |
@@ -313,6 +313,23 @@ curl -s localhost:8080/v1/agents/helper/run \
 
 Any OpenAI client can talk to your agents. Point it at
 `http://localhost:8080/v1` and use the agent name as the model.
+
+**Images.** `images` takes up to 4 pictures per turn (JPEG, PNG, WebP, GIF,
+5 MB each), as data URLs, plain base64 or `{"data", "media_type"}`; an image
+alone is a valid input. `/v1/chat/completions` accepts `image_url` parts with
+data URLs. Links are refused: the runtime never fetches a URL a caller sends.
+The model sees a picture in the turn it was sent; the stored session keeps a
+note instead of the bytes, so a follow-up question relies on what the agent
+said about it. Run requests may be up to `server.max_run_body_bytes` (32 MiB),
+every other route keeps `server.max_body_bytes`. The model must understand
+images (e.g. Mistral Large/Medium/Small, Qwen-VL, Claude, GPT-4o and newer);
+a text-only model answers with the provider's error.
+
+```bash
+curl -s localhost:8080/v1/agents/helper/run \
+  -H "Authorization: Bearer $AGENT_RUNTIME_TOKEN" \
+  -d "{\"input\":\"What is in this photo?\",\"images\":[\"data:image/jpeg;base64,$(base64 < foto.jpg | tr -d '\\n')\"]}"
+```
 
 Use your agents from Claude Code, Cursor and other MCP clients:
 

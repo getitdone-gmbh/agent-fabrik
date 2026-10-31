@@ -177,7 +177,11 @@ func (s *Server) limitBody(next http.Handler) http.Handler {
 		}
 		// File uploads are capped by the tenant's per-file quota instead
 		// (putFile), which may be larger than the API body limit.
-		if !(r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/files/")) {
+		switch {
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/files/"):
+		case r.Method == http.MethodPost && carriesImages(r.URL.Path):
+			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxRunBodyBytes)
+		default:
 			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Server.MaxBodyBytes)
 		}
 		next.ServeHTTP(w, r)
@@ -504,10 +508,46 @@ func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"connectors": out})
 }
 
+// carriesImages reports the routes whose body may hold images.
+func carriesImages(path string) bool {
+	return path == "/v1/chat/completions" ||
+		(strings.HasPrefix(path, "/v1/agents/") && strings.HasSuffix(path, "/run"))
+}
+
 type runRequest struct {
-	Input     string `json:"input"`
-	SessionID string `json:"session_id"`
-	Stream    bool   `json:"stream"`
+	Input     string       `json:"input"`
+	Images    []imageInput `json:"images"`
+	SessionID string       `json:"session_id"`
+	Stream    bool         `json:"stream"`
+}
+
+// imageInput is a data: URL or base64 string, or {"data", "media_type"}.
+type imageInput struct {
+	Data      string `json:"data"`
+	MediaType string `json:"media_type"`
+}
+
+func (i *imageInput) UnmarshalJSON(b []byte) error {
+	if json.Unmarshal(b, &i.Data) == nil {
+		return nil
+	}
+	type plain imageInput
+	return json.Unmarshal(b, (*plain)(i))
+}
+
+func parseImages(in []imageInput) ([]llm.Image, error) {
+	if len(in) > llm.MaxImages {
+		return nil, fmt.Errorf("%w: at most %d images per message", llm.ErrImage, llm.MaxImages)
+	}
+	var out []llm.Image
+	for n, i := range in {
+		img, err := llm.ParseImage(i.Data, i.MediaType)
+		if err != nil {
+			return nil, fmt.Errorf("image %d: %w", n+1, err)
+		}
+		out = append(out, img)
+	}
+	return out, nil
 }
 
 func (s *Server) runAgent(w http.ResponseWriter, r *http.Request) {
@@ -521,11 +561,16 @@ func (s *Server) runAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(req.Input) == "" {
+	images, err := parseImages(req.Images)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Input) == "" && len(images) == 0 {
 		writeError(w, http.StatusBadRequest, "input is required")
 		return
 	}
-	in := agent.RunInput{Input: req.Input, SessionID: req.SessionID}
+	in := agent.RunInput{Input: req.Input, Images: images, SessionID: req.SessionID}
 	if req.Stream || strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		s.streamRun(w, r, id, name, in)
 		return

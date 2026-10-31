@@ -39,25 +39,40 @@ type chatRequest struct {
 	User   string `json:"user"`
 }
 
-func contentText(raw json.RawMessage) string {
+// contentParts reads an OpenAI message content: a string, or text and
+// image_url parts. Images must be data: URLs; the runtime never fetches a
+// caller-supplied link (that would be a request to anywhere on its behalf).
+func contentParts(raw json.RawMessage) (string, []llm.Image, error) {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return s
+		return s, nil, nil
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		ImageURL json.RawMessage `json:"image_url"`
 	}
-	if json.Unmarshal(raw, &parts) == nil {
-		var b strings.Builder
-		for _, p := range parts {
-			if p.Type == "text" {
-				b.WriteString(p.Text)
+	if json.Unmarshal(raw, &parts) != nil {
+		return "", nil, nil
+	}
+	var b strings.Builder
+	var imgs []imageInput
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			b.WriteString(p.Text)
+		case "image_url":
+			var u struct {
+				URL string `json:"url"`
 			}
+			if json.Unmarshal(p.ImageURL, &u.URL) != nil {
+				_ = json.Unmarshal(p.ImageURL, &u)
+			}
+			imgs = append(imgs, imageInput{Data: u.URL})
 		}
-		return b.String()
 	}
-	return ""
+	images, err := parseImages(imgs)
+	return b.String(), images, err
 }
 
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +91,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	var history []llm.Message
 	var system []string
 	input := ""
+	var images []llm.Image
 	last := -1
 	for i, m := range req.Messages {
 		if m.Role == "user" {
@@ -87,14 +103,18 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, m := range req.Messages {
-		text := contentText(m.Content)
+		text, imgs, err := contentParts(m.Content)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("message %d: %v", i+1, err))
+			return
+		}
 		switch {
 		case i == last:
-			input = text
+			input, images = text, imgs
 		case m.Role == "system" || m.Role == "developer":
 			system = append(system, text)
 		case m.Role == "user":
-			history = append(history, llm.Message{Role: llm.RoleUser, Content: text})
+			history = append(history, llm.Message{Role: llm.RoleUser, Content: text, Images: imgs})
 		case m.Role == "assistant" && text != "":
 			history = append(history, llm.Message{Role: llm.RoleAssistant, Content: text})
 		}
@@ -108,7 +128,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	id := "chatcmpl-" + agent.NewSessionID()[2:]
 	created := time.Now().Unix()
-	res, err := s.m.Run(r.Context(), tenantOf(r), name, agent.RunInput{Input: input, History: history})
+	res, err := s.m.Run(r.Context(), tenantOf(r), name, agent.RunInput{Input: input, Images: images, History: history})
 	if err != nil {
 		fail(w, err)
 		return

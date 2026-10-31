@@ -36,6 +36,7 @@ type olToolCall struct {
 type olMessage struct {
 	Role      string       `json:"role"`
 	Content   string       `json:"content"`
+	Images    []string     `json:"images,omitempty"` // base64
 	ToolCalls []olToolCall `json:"tool_calls,omitempty"`
 	ToolName  string       `json:"tool_name,omitempty"`
 }
@@ -77,7 +78,11 @@ func (o *Ollama) Chat(ctx context.Context, req Request) (*Response, error) {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleUser:
-			body.Messages = append(body.Messages, olMessage{Role: "user", Content: m.Content})
+			um := olMessage{Role: "user", Content: m.Content}
+			for _, img := range m.Images {
+				um.Images = append(um.Images, img.Data)
+			}
+			body.Messages = append(body.Messages, um)
 		case RoleAssistant:
 			am := olMessage{Role: "assistant", Content: m.Content}
 			for _, tc := range m.ToolCalls {
