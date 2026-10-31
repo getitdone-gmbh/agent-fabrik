@@ -113,12 +113,35 @@ agents:
 		t.Errorf("admin detail: %d", code)
 	}
 
+	// A conversation: the first answer's session id continues it.
+	_, first := e.call(t, acmeKey, "POST", "/v1/agents/helper/run", `{"input":"erste Frage"}`)
+	sid, _ := first["session_id"].(string)
+	e.call(t, acmeKey, "POST", "/v1/agents/helper/run", `{"input":"zweite Frage","session_id":"`+sid+`"}`)
+	code, out = e.call(t, acmeKey, "GET", "/v1/sessions?agent=helper", "")
+	ss, _ := out["sessions"].([]any)
+	if code != 200 || len(ss) < 2 || ss[0].(map[string]any)["session_id"] != sid || ss[0].(map[string]any)["runs"] != float64(2) ||
+		ss[0].(map[string]any)["first_input"] != "erste Frage" {
+		t.Fatalf("sessions: %d %v", code, out)
+	}
+	_, out = e.call(t, acmeKey, "GET", "/v1/runs?session="+sid, "")
+	if rs := out["runs"].([]any); len(rs) != 2 || rs[0].(map[string]any)["input"] != "zweite Frage" {
+		t.Errorf("runs of a session: %v", out)
+	}
+	if _, out := e.call(t, betaKey, "GET", "/v1/runs?session="+sid, ""); len(out["runs"].([]any)) != 0 {
+		t.Errorf("other tenant reads the conversation: %v", out)
+	}
+	if code, _ := e.call(t, runKey, "GET", "/v1/sessions", ""); code != 403 {
+		t.Errorf("run key lists conversations: %d", code)
+	}
+	if _, out := e.call(t, acmeKey, "GET", "/v1/me", ""); out["run_log_days"] != float64(30) {
+		t.Errorf("me.run_log_days: %v", out["run_log_days"])
+	}
 	code, out = e.call(t, acmeKey, "GET", "/v1/stats?days=7", "")
 	totals, _ := out["totals"].(map[string]any)
-	if code != 200 || totals["runs"] != float64(2) || totals["failed"] != float64(1) || len(out["agents"].([]any)) != 2 || len(out["days"].([]any)) != 1 {
+	if code != 200 || totals["runs"] != float64(4) || totals["failed"] != float64(1) || len(out["agents"].([]any)) != 2 || len(out["days"].([]any)) != 1 {
 		t.Errorf("stats: %d %v", code, out)
 	}
-	if _, out := e.call(t, acmeKey, "GET", "/v1/stats?agent=helper", ""); out["totals"].(map[string]any)["runs"] != float64(1) {
+	if _, out := e.call(t, acmeKey, "GET", "/v1/stats?agent=helper", ""); out["totals"].(map[string]any)["runs"] != float64(3) {
 		t.Errorf("stats by agent: %v", out)
 	}
 	if _, out := e.call(t, betaKey, "GET", "/v1/stats", ""); out["totals"].(map[string]any)["runs"] != float64(0) {
@@ -146,10 +169,10 @@ agents:
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	for _, want := range []string{
-		`agent_runs_total{tenant="` + acme + `",agent="helper",source="api",status="ok"} 1`,
+		`agent_runs_total{tenant="` + acme + `",agent="helper",source="api",status="ok"} 3`,
 		`agent_runs_total{tenant="` + acme + `",agent="broken",source="api",status="error"} 1`,
 		`agent_llm_errors_total{provider="dead",kind="network"}`,
-		`agent_run_duration_seconds_count{tenant="` + acme + `",agent="helper"} 1`,
+		`agent_run_duration_seconds_count{tenant="` + acme + `",agent="helper"} 3`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("metrics missing %s", want)

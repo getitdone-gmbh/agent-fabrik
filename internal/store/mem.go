@@ -475,7 +475,13 @@ func (m *Mem) ListRuns(_ context.Context, tenant string, f RunFilter) ([]Run, er
 	out := []Run{}
 	for i := range all {
 		if f.match(&all[i]) {
-			out = append(out, all[i].Preview())
+			r := all[i]
+			if f.SessionID == "" {
+				r = r.Preview()
+			} else {
+				r.Trace = nil
+			}
+			out = append(out, r)
 			if len(out) == f.limit() {
 				break
 			}
@@ -584,4 +590,10 @@ func (m *Mem) DeleteAlert(_ context.Context, tenant, agent, kind string) error {
 	defer m.mu.Unlock()
 	delete(m.alerts, alertKey(tenant, agent, kind))
 	return nil
+}
+
+func (m *Mem) ListSessions(_ context.Context, tenant string, f SessionFilter) ([]SessionSummary, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return sessionsOf(m.runs[tenant], f), nil
 }

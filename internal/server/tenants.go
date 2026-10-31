@@ -35,6 +35,7 @@ import (
 //   GET    /v1/files[?prefix=], GET/PUT/DELETE /v1/files/{path}   (raw bytes)
 //   GET    /v1/runs[?agent=&status=&before=&limit=], GET /v1/runs/{id}   run log
 //   GET    /v1/stats[?agent=&days=7]      totals, per day, per agent
+//   GET    /v1/sessions[?agent=&status=failed&before=]   conversations; their runs: /v1/runs?session=
 //   GET    /v1/alerts                     problems the alert checker sees
 //   admin: /v1/admin/tenants[/{id}[/keys]], /v1/admin/stats
 
@@ -60,6 +61,7 @@ func (s *Server) tenantRoutes(mux *http.ServeMux, h func(string, http.HandlerFun
 	h("GET /v1/runs", s.listRuns)
 	h("GET /v1/runs/{id}", s.getRun)
 	h("GET /v1/stats", s.getStats)
+	h("GET /v1/sessions", s.listSessions)
 	h("GET /v1/alerts", s.listAlerts)
 
 	a := func(pattern string, fn http.HandlerFunc) { h(pattern, s.adminOnly(fn)) }
@@ -109,7 +111,8 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	out := map[string]any{"tenant": t, "limits": s.m.Limits(t), "admin": isAdmin(r), "shared_providers": s.m.SharedProviders(t)}
+	out := map[string]any{"tenant": t, "limits": s.m.Limits(t), "admin": isAdmin(r), "shared_providers": s.m.SharedProviders(t),
+		"run_log_days": s.m.RunLogDays()}
 	if id != tenant.System {
 		if u, err := s.m.Usage(r.Context(), id); err == nil {
 			out["usage"] = u

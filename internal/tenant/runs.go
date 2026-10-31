@@ -165,3 +165,14 @@ func (m *Manager) GetRun(ctx context.Context, tenantID, id string) (*store.Run, 
 	}
 	return m.st.GetRun(ctx, tenantID, id)
 }
+
+// Sessions lists a tenant's conversations from the run log.
+func (m *Manager) Sessions(ctx context.Context, tenantID string, f store.SessionFilter) ([]store.SessionSummary, error) {
+	if m.st == nil {
+		return []store.SessionSummary{}, nil
+	}
+	return m.st.ListSessions(ctx, tenantID, f)
+}
+
+// RunLogDays is how many days the run log keeps (0: off).
+func (m *Manager) RunLogDays() int { return int(m.runLogRetention().Hours() / 24) }

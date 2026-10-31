@@ -173,3 +173,47 @@ func TestRunStatsAndAlerts(t *testing.T) {
 		})
 	}
 }
+
+func TestSessions(t *testing.T) {
+	for name, mk := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			s := mk(t)
+			defer s.Close()
+			ctx := context.Background()
+			s.CreateTenant(ctx, Tenant{ID: "t1"})
+			t0 := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+			long := strings.Repeat("x", 1000)
+			for i, r := range []Run{
+				{SessionID: "s_a", Agent: "support", Status: RunOK, Input: "Hallo", Output: long, StartedAt: t0},
+				{SessionID: "s_a", Agent: "support", Status: RunError, Input: "Und die Preise?", StartedAt: t0.Add(2 * time.Minute)},
+				{SessionID: "s_b", Agent: "support", Status: RunOK, Input: "Oeffnungszeiten?", StartedAt: t0.Add(time.Hour)},
+				{SessionID: "s_c", Agent: "sales", Status: RunOK, Input: "Angebot", StartedAt: t0.Add(30 * time.Minute)},
+				{Agent: "support", Status: RunOK, Input: "ohne Session", StartedAt: t0},
+			} {
+				r.ID, r.TenantID = fmt.Sprint("r", i), "t1"
+				s.RecordRun(ctx, r)
+			}
+			ss, err := s.ListSessions(ctx, "t1", SessionFilter{Agent: "support"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ss) != 2 || ss[0].SessionID != "s_b" || ss[1].SessionID != "s_a" || ss[1].Runs != 2 || ss[1].Failed != 1 ||
+				ss[1].FirstInput != "Hallo" || !ss[1].LastAt.Equal(t0.Add(2*time.Minute)) {
+				t.Errorf("sessions: %+v", ss)
+			}
+			if ss, _ := s.ListSessions(ctx, "t1", SessionFilter{Failed: true}); len(ss) != 1 || ss[0].SessionID != "s_a" {
+				t.Errorf("failed only: %+v", ss)
+			}
+			if ss, _ := s.ListSessions(ctx, "t1", SessionFilter{Before: t0.Add(time.Hour)}); len(ss) != 2 || ss[0].SessionID != "s_c" {
+				t.Errorf("paging: %+v", ss)
+			}
+			if ss, _ := s.ListSessions(ctx, "other", SessionFilter{}); len(ss) != 0 {
+				t.Errorf("other tenant: %+v", ss)
+			}
+			runs, _ := s.ListRuns(ctx, "t1", RunFilter{SessionID: "s_a"})
+			if len(runs) != 2 || runs[1].Output != long || runs[0].Input != "Und die Preise?" {
+				t.Errorf("conversation runs must be complete: %d runs", len(runs))
+			}
+		})
+	}
+}
