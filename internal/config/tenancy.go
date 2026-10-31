@@ -29,6 +29,9 @@ type TenancyConfig struct {
 	MaxCachedRuntimes int    `yaml:"max_cached_runtimes"`
 	SchedulerWorkers  int    `yaml:"scheduler_workers"`
 	SessionTTL        string `yaml:"session_ttl"`
+	// RunLogDays keeps a record of every agent run (input, tool calls,
+	// answer) for this many days. Default 30; negative disables the log.
+	RunLogDays int `yaml:"run_log_days"`
 	// Replicas is the number of runtime replicas. Rate and concurrency
 	// limits are counted per process, so each replica enforces its share
 	// (limit / replicas, rounded up) and the tenant gets the plan's total.

@@ -181,6 +181,7 @@ async function renderChrome() {
   $("#nav").hidden = false;
   $("#who").hidden = false;
   for (const a of document.querySelectorAll("[data-tenant]")) a.hidden = !editable();
+  for (const a of document.querySelectorAll("[data-runs]")) a.hidden = !S.tenancy;
   const label = $("#who-label");
   if (S.tenancy) {
     const t = S.me.tenant;
@@ -206,7 +207,9 @@ async function renderChrome() {
 // ---------- routing ----------
 
 function route() {
-  const parts = (location.hash.replace(/^#\/?/, "") || "agents").split("/").map(decodeURIComponent);
+  const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
+  const parts = (path || "agents").split("/").map(decodeURIComponent);
+  const params = new URLSearchParams(query || "");
   const section = parts[0];
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   const run = {
@@ -219,6 +222,7 @@ function route() {
     providers: providersPage,
     connectors: () => (parts[1] ? connectorEditor(parts[1] === "new" ? null : parts[1]) : connectorsPage()),
     secrets: secretsPage,
+    runs: () => (parts[1] ? runDetail(parts[1], params.get("tenant")) : runList(params)),
   }[section] || agentList;
   Promise.resolve(run()).catch((e) => {
     if (e instanceof APIError && e.status === 401) return;
@@ -340,6 +344,7 @@ async function agentDetail(name) {
       h("h1", {}, name),
       !rt && h("span", { class: "badge" }, "hidden"),
       h("span", { class: "spacer" }),
+      S.tenancy && h("a", { class: "button ghost", href: "#/runs?agent=" + enc(name) }, "Runs"),
       spec && h("a", { class: "button", href: "#/agents/" + enc(name) + "/edit" }, "Edit"),
       spec && h("button", { class: "danger", type: "button", onclick: del }, "Delete")),
     h("div", { class: "split" },
@@ -906,6 +911,127 @@ async function secretsPage() {
     h("form", { class: "card", onsubmit: createKey },
       h("div", { class: "form-grid" }, h("label", {}, "Key name", kName)),
       h("div", { class: "bar-actions" }, h("button", { class: "primary", type: "submit" }, "Create key")))),
+  );
+}
+
+// ---------- runs (run log) ----------
+
+const secs = (ms) => ((ms || 0) / 1000).toFixed(1) + " s";
+const when = (t) => new Date(t).toLocaleString();
+function statusBadge(st) {
+  const label = { ok: "ok", max_steps: "step limit", error: "error" }[st] || st;
+  return h("span", { class: "badge " + (st === "ok" ? "good" : "bad") }, label);
+}
+
+async function runList(params) {
+  if (!S.tenancy) { go("#/agents"); return; }
+  mount(h("p", { class: "muted" }, "Loading…"));
+  const agent = params.get("agent") || "";
+  const failed = params.get("status") === "failed";
+  const all = S.admin && !S.actAs && params.get("tenant") === "*";
+  const q = (before) => {
+    const u = new URLSearchParams({ limit: "50" });
+    if (agent) u.set("agent", agent);
+    if (failed) u.set("status", "failed");
+    if (all) u.set("tenant", "*");
+    if (before) u.set("before", before);
+    return "/v1/runs?" + u;
+  };
+  const [{ runs }, { agents }] = await Promise.all([api("GET", q()), api("GET", "/v1/agents").catch(() => ({ agents: [] }))]);
+  const setParam = (k, v) => {
+    const u = new URLSearchParams(params);
+    if (v) u.set(k, v); else u.delete(k);
+    go("#/runs" + (u.toString() ? "?" + u : ""));
+  };
+  const names = [...new Set(agents.map((a) => a.name).concat(agent ? [agent] : []))].sort();
+  const pick = h("select", { onchange: (e) => setParam("agent", e.target.value) },
+    h("option", { value: "" }, "All agents"),
+    names.map((n) => h("option", { value: n, selected: n === agent }, n)));
+  const onlyFailed = h("label", { class: "check" },
+    h("input", { type: "checkbox", checked: failed, onchange: (e) => setParam("status", e.target.checked ? "failed" : "") }), " Only problems");
+  const allTenants = S.admin && !S.actAs && h("label", { class: "check" },
+    h("input", { type: "checkbox", checked: all, onchange: (e) => setParam("tenant", e.target.checked ? "*" : "") }), " All tenants");
+
+  const body = h("tbody");
+  const row = (r) => {
+    const href = "#/runs/" + enc(r.id) + (all ? "?tenant=" + enc(r.tenant_id) : "");
+    return h("tr", { class: "link", onclick: (e) => { if (!e.target.closest("a")) go(href); } },
+      h("td", { class: "muted nowrap" }, when(r.started_at)),
+      all && h("td", {}, h("code", {}, r.tenant_id)),
+      h("td", {}, r.agent, h("div", { class: "muted small" }, r.source)),
+      h("td", {}, statusBadge(r.status)),
+      h("td", { class: "preview" }, h("a", { href }, r.input || (r.images ? "(image)" : "–")),
+        r.error ? h("div", { class: "error small" }, r.error) : h("div", { class: "muted small" }, r.output)),
+      h("td", { class: "num" }, r.steps, r.tool_errors > 0 ? h("div", { class: "error small" }, r.tool_errors + " tool err") : h("div", { class: "muted small" }, r.tool_calls + " tools")),
+      h("td", { class: "num muted" }, fmt(r.input_tokens + r.output_tokens)),
+      h("td", { class: "num muted nowrap" }, secs(r.duration_ms)));
+  };
+  runs.forEach((r) => body.append(row(r)));
+  const more = h("button", { class: "ghost", type: "button" }, "Load older");
+  let last = runs.length ? runs[runs.length - 1].started_at : null;
+  more.hidden = runs.length < 50;
+  more.onclick = async () => {
+    try {
+      const page = await api("GET", q(last));
+      page.runs.forEach((r) => body.append(row(r)));
+      if (page.runs.length) last = page.runs[page.runs.length - 1].started_at;
+      more.hidden = page.runs.length < 50;
+    } catch (e) { toast(e.message, true); }
+  };
+  mount(
+    h("div", { class: "head" }, h("h1", {}, "Runs"), h("span", { class: "spacer" }), pick, onlyFailed, allTenants),
+    h("p", { class: "muted" }, "Every agent run with its question, tool calls and answer, kept for 30 days. Images are not stored."),
+    runs.length
+      ? h("table", { class: "runs" },
+        h("thead", {}, h("tr", {}, h("th", {}, "When"), all && h("th", {}, "Tenant"), h("th", {}, "Agent"), h("th", {}, "Status"), h("th", {}, "Question / answer"),
+          h("th", { class: "num" }, "Steps"), h("th", { class: "num" }, "Tokens"), h("th", { class: "num" }, "Time"))),
+        body)
+      : h("div", { class: "empty" }, h("p", {}, failed ? "No problems recorded." : "No runs recorded yet.")),
+    more);
+}
+
+async function runDetail(id, tenant) {
+  mount(h("p", { class: "muted" }, "Loading…"));
+  const r = await api("GET", "/v1/runs/" + enc(id) + (tenant ? "?tenant=" + enc(tenant) : ""));
+  const facts = h("dl", { class: "facts" });
+  const fact = (k, v) => { if (v != null && v !== "") facts.append(h("dt", {}, k), h("dd", {}, v)); };
+  fact("Agent", h("a", { href: "#/agents/" + enc(r.agent) }, r.agent));
+  if (tenant) fact("Tenant", h("code", {}, r.tenant_id));
+  fact("Started", when(r.started_at));
+  fact("Status", statusBadge(r.status));
+  fact("Source", r.source);
+  fact("Session", r.session_id && h("code", {}, r.session_id));
+  fact("Work", r.steps + " steps · " + r.tool_calls + (r.tool_calls === 1 ? " tool call" : " tool calls") + (r.tool_errors ? " · " + r.tool_errors + " failed" : "") + " · " + secs(r.duration_ms));
+  fact("Tokens", fmt(r.input_tokens) + " in · " + fmt(r.output_tokens) + " out");
+
+  const log = h("div", { class: "log" });
+  log.append(h("div", { class: "msg user" }, r.input || "", r.images ? h("div", { class: "foot" }, r.images + " image(s) attached, not stored") : null));
+  const calls = [];
+  for (const s of r.trace || []) {
+    if (s.type === "tool_call") {
+      const d = h("details", {}, h("summary", {}, "⚙ " + s.tool + " (step " + s.step + ")"), h("pre", {}, s.args ? JSON.stringify(s.args, null, 2) : ""));
+      const box = h("div", { class: "tool" }, d);
+      calls.push({ id: s.call_id || s.tool, box, d });
+      log.append(box);
+    } else if (s.type === "tool_result") {
+      const i = calls.findIndex((c) => c.id === (s.call_id || s.tool));
+      const c = i >= 0 ? calls.splice(i, 1)[0] : null;
+      const out = h("pre", {}, "→ " + (s.text || ""));
+      if (c) { c.d.append(out); if (s.is_error) { c.box.classList.add("bad"); c.d.open = true; } }
+      else log.append(h("div", { class: "tool" + (s.is_error ? " bad" : "") }, out));
+    } else if (s.type === "message" && s.text && s.text !== r.output) {
+      log.append(h("div", { class: "msg bot muted" }, s.text));
+    } else if (s.type === "note") {
+      log.append(h("div", { class: "muted small" }, s.text));
+    }
+  }
+  if (r.error) log.append(h("div", { class: "msg err" }, r.error));
+  if (r.output) log.append(h("div", { class: "msg bot" }, r.output));
+
+  mount(
+    h("a", { class: "crumb", href: "#/runs" + (r.agent ? "?agent=" + enc(r.agent) : "") }, "← Runs"),
+    h("div", { class: "head" }, h("h1", {}, "Run"), statusBadge(r.status)),
+    h("div", { class: "split" }, h("div", { class: "card" }, facts), h("div", { class: "card trace" }, log)),
   );
 }
 

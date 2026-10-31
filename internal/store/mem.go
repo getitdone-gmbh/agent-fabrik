@@ -21,6 +21,7 @@ type Mem struct {
 	path     string
 	data     memData
 	sessions agent.Store
+	runs     map[string][]Run // per tenant, oldest first; not snapshotted
 	dirty    chan struct{}
 	done     chan struct{}
 	wg       sync.WaitGroup
@@ -45,6 +46,7 @@ func NewMem(path string, sessionTTL time.Duration, maxSessions int) (*Mem, error
 	m := &Mem{
 		path:     path,
 		sessions: agent.NewMemoryStore(sessionTTL, maxSessions),
+		runs:     map[string][]Run{},
 		dirty:    make(chan struct{}, 1),
 		done:     make(chan struct{}),
 		data: memData{
@@ -168,6 +170,7 @@ func (m *Mem) DeleteTenant(_ context.Context, id string) error {
 	delete(m.data.Secrets, id)
 	delete(m.data.Usage, id)
 	delete(m.data.Files, id)
+	delete(m.runs, id)
 	for h, k := range m.data.Keys {
 		if k.TenantID == id {
 			delete(m.data.Keys, h)
@@ -430,4 +433,79 @@ func (m *Mem) FileUsage(_ context.Context, tenant string) (FileUsage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.fileUsageLocked(tenant, "\x00"), nil
+}
+
+// ---------- runs ----------
+
+// memRunsPerTenant bounds the in-memory run log; the file snapshot does not
+// include it (a run log is for looking back a few days, not for keeping).
+const memRunsPerTenant = 1000
+
+func (m *Mem) RecordRun(_ context.Context, r Run) error {
+	r = r.Bound()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := append(m.runs[r.TenantID], r)
+	if len(l) > memRunsPerTenant {
+		l = append([]Run(nil), l[len(l)-memRunsPerTenant:]...)
+	}
+	m.runs[r.TenantID] = l
+	return nil
+}
+
+func (m *Mem) ListRuns(_ context.Context, tenant string, f RunFilter) ([]Run, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var all []Run
+	if f.AllTenants {
+		for _, l := range m.runs {
+			all = append(all, l...)
+		}
+	} else {
+		all = append(all, m.runs[tenant]...)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].StartedAt.After(all[j].StartedAt) })
+	out := []Run{}
+	for i := range all {
+		if f.match(&all[i]) {
+			out = append(out, all[i].Preview())
+			if len(out) == f.limit() {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (m *Mem) GetRun(_ context.Context, tenant, id string) (*Run, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, r := range m.runs[tenant] {
+		if r.ID == id {
+			return &r, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (m *Mem) PruneRuns(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for t, l := range m.runs {
+		keep := l[:0]
+		for _, r := range l {
+			if r.StartedAt.Before(before) {
+				n++
+				continue
+			}
+			keep = append(keep, r)
+		}
+		if len(keep) == 0 {
+			delete(m.runs, t)
+		} else {
+			m.runs[t] = keep
+		}
+	}
+	return n, nil
 }

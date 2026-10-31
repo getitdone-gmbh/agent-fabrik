@@ -61,6 +61,7 @@ type RunInput struct {
 	Images    []llm.Image   // sent with Input, not stored (see llm.WithoutImages)
 	SessionID string        // continue a conversation; empty starts a new one
 	History   []llm.Message // explicit history (used instead of the store when set)
+	Source    string        // who started the run (api, chat, mcp, webhook, cron, imap), for the run log
 	OnEvent   func(Event)
 }
 
@@ -221,6 +222,7 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 			Temperature: a.cfg.Temperature,
 		})
 		if err != nil {
+			metrics.LLMErrors.Inc(a.provider.Name(), llmErrorKind(err))
 			metrics.RunsFailed.Add(1)
 			emit(Event{Type: "error", Text: err.Error()})
 			res.DurationMS = time.Since(start).Milliseconds()
@@ -267,6 +269,31 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 	a.log.Info("run finished", "session", sid, "steps", res.Steps, "tool_calls", res.ToolCalls,
 		"input_tokens", res.Usage.InputTokens, "output_tokens", res.Usage.OutputTokens, "ms", res.DurationMS, "stop", res.StopReason)
 	return res, nil
+}
+
+// llmErrorKind classifies a failed model call for alerting: "auth" needs a
+// new key, "network" and "timeout" usually mean the endpoint is down.
+func llmErrorKind(err error) string {
+	var ae *llm.APIError
+	switch {
+	case errors.As(err, &ae):
+		switch {
+		case ae.Status == 401 || ae.Status == 403:
+			return "auth"
+		case ae.Status == 429:
+			return "throttled"
+		case ae.Status == 0:
+			return "network"
+		case ae.Status >= 500 || ae.Status < 400: // 5xx, or a 200 without an answer
+			return "server"
+		}
+		return "client"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return "network"
 }
 
 func (a *Agent) execTools(ctx context.Context, step int, calls []llm.ToolCall, emit func(Event)) []llm.Message {

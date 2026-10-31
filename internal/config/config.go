@@ -50,6 +50,10 @@ type ServerConfig struct {
 	// MaxRunBodyBytes caps agent runs and chat completions, which may carry
 	// images (llm.MaxImages x llm.MaxImageBytes, base64). Default 32 MiB.
 	MaxRunBodyBytes int64 `yaml:"max_run_body_bytes"`
+	// MetricsAddr serves /metrics on a separate listener (e.g. ":9091")
+	// instead of the API port. The metrics name tenants and agents, so
+	// behind a public ingress they belong on a port the ingress never sees.
+	MetricsAddr string `yaml:"metrics_addr"`
 }
 
 // Tokens returns all configured bearer tokens.

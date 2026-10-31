@@ -128,7 +128,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	id := "chatcmpl-" + agent.NewSessionID()[2:]
 	created := time.Now().Unix()
-	res, err := s.m.Run(r.Context(), tenantOf(r), name, agent.RunInput{Input: input, Images: images, History: history})
+	res, err := s.m.Run(r.Context(), tenantOf(r), name, agent.RunInput{Input: input, Images: images, History: history, Source: "chat"})
 	if err != nil {
 		fail(w, err)
 		return

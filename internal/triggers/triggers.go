@@ -42,7 +42,7 @@ func runScheduled(ctx context.Context, env Env, agentName string, t config.Trigg
 		prompt = "Scheduled run at {{now}}. Perform your routine task."
 	}
 	metrics.TriggerRuns.Add(1)
-	res, err := env.Run(ctx, agentName, agent.RunInput{Input: expandPrompt(prompt, at), SessionID: t.Session})
+	res, err := env.Run(ctx, agentName, agent.RunInput{Input: expandPrompt(prompt, at), SessionID: t.Session, Source: t.Type})
 	if err != nil {
 		if ctx.Err() == nil { // not a shutdown
 			log.Warn("scheduled run failed", "err", err)
@@ -209,7 +209,7 @@ func (p *poller) handle(ctx context.Context, env Env, conn *tools.EmailConnector
 	}
 
 	metrics.TriggerRuns.Add(1)
-	res, err := env.Run(ctx, p.agent, agent.RunInput{Input: b.String(), SessionID: threadSession(e)})
+	res, err := env.Run(ctx, p.agent, agent.RunInput{Input: b.String(), SessionID: threadSession(e), Source: "imap"})
 	if err != nil {
 		return err
 	}

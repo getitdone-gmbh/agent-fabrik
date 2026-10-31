@@ -111,6 +111,9 @@ type Store interface {
 	// Files: per-tenant file storage (removed with the tenant).
 	FileStore
 
+	// Runs: the run log (removed with the tenant).
+	RunStore
+
 	// Leader reports whether this replica should run schedulers. Backends
 	// without coordination always return true.
 	Leader(ctx context.Context) bool

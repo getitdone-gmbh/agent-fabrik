@@ -97,6 +97,28 @@ CREATE TABLE IF NOT EXISTS ar_files (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, path)
 );
+CREATE TABLE IF NOT EXISTS ar_runs (
+  id text PRIMARY KEY,
+  tenant_id text NOT NULL,
+  agent text NOT NULL,
+  source text NOT NULL DEFAULT '',
+  session_id text NOT NULL DEFAULT '',
+  status text NOT NULL,
+  error text NOT NULL DEFAULT '',
+  input text NOT NULL DEFAULT '',
+  images int NOT NULL DEFAULT 0,
+  output text NOT NULL DEFAULT '',
+  trace jsonb,
+  steps int NOT NULL DEFAULT 0,
+  tool_calls int NOT NULL DEFAULT 0,
+  tool_errors int NOT NULL DEFAULT 0,
+  input_tokens int NOT NULL DEFAULT 0,
+  output_tokens int NOT NULL DEFAULT 0,
+  duration_ms bigint NOT NULL DEFAULT 0,
+  started_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ar_runs_tenant ON ar_runs(tenant_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS ar_runs_started ON ar_runs(started_at);
 `
 
 // NewPostgres connects and migrates the schema.
@@ -242,7 +264,12 @@ func (p *Postgres) DeleteTenant(ctx context.Context, id string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	_, err = p.db.ExecContext(ctx, `DELETE FROM ar_sessions WHERE key LIKE $1`, escapeLike(id+"/")+"%")
+	if _, err = p.db.ExecContext(ctx, `DELETE FROM ar_sessions WHERE key LIKE $1`, escapeLike(id+"/")+"%"); err != nil {
+		return err
+	}
+	// ar_runs has no foreign key: the system tenant records runs too and
+	// has no row in ar_tenants.
+	_, err = p.db.ExecContext(ctx, `DELETE FROM ar_runs WHERE tenant_id=$1`, id)
 	return err
 }
 
@@ -662,4 +689,91 @@ func (p *Postgres) FileUsage(ctx context.Context, tenant string) (FileUsage, err
 	var u FileUsage
 	err := p.db.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(size),0) FROM ar_files WHERE tenant_id=$1`, tenant).Scan(&u.Files, &u.Bytes)
 	return u, err
+}
+
+// ---------- runs ----------
+
+func (p *Postgres) RecordRun(ctx context.Context, r Run) error {
+	r = r.Bound()
+	trace, err := json.Marshal(r.Trace)
+	if err != nil {
+		return err
+	}
+	_, err = p.db.ExecContext(ctx, `INSERT INTO ar_runs (id, tenant_id, agent, source, session_id, status, error, input, images, output, trace,
+		steps, tool_calls, tool_errors, input_tokens, output_tokens, duration_ms, started_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		r.ID, r.TenantID, r.Agent, r.Source, r.SessionID, r.Status, r.Error, r.Input, r.Images, r.Output, trace,
+		r.Steps, r.ToolCalls, r.ToolErrors, r.InputTokens, r.OutputTokens, r.DurationMS, r.StartedAt)
+	return err
+}
+
+const runColumns = `id, tenant_id, agent, source, session_id, status, error, %s, images, %s,
+	steps, tool_calls, tool_errors, input_tokens, output_tokens, duration_ms, started_at`
+
+func scanRun(sc interface{ Scan(...any) error }, r *Run, extra ...any) error {
+	return sc.Scan(append([]any{&r.ID, &r.TenantID, &r.Agent, &r.Source, &r.SessionID, &r.Status, &r.Error, &r.Input, &r.Images, &r.Output,
+		&r.Steps, &r.ToolCalls, &r.ToolErrors, &r.InputTokens, &r.OutputTokens, &r.DurationMS, &r.StartedAt}, extra...)...)
+}
+
+func (p *Postgres) ListRuns(ctx context.Context, tenant string, f RunFilter) ([]Run, error) {
+	cols := fmt.Sprintf(runColumns, fmt.Sprintf("left(input, %d)", previewLen+1), fmt.Sprintf("left(output, %d)", previewLen+1))
+	q := `SELECT ` + cols + ` FROM ar_runs WHERE true`
+	var args []any
+	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
+	if !f.AllTenants {
+		q += ` AND tenant_id=` + arg(tenant)
+	}
+	if f.Agent != "" {
+		q += ` AND agent=` + arg(f.Agent)
+	}
+	switch f.Status {
+	case "":
+	case "failed":
+		q += ` AND status<>'ok'`
+	default:
+		q += ` AND status=` + arg(f.Status)
+	}
+	if !f.Before.IsZero() {
+		q += ` AND started_at<` + arg(f.Before)
+	}
+	q += ` ORDER BY started_at DESC LIMIT ` + arg(f.limit())
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Run{}
+	for rows.Next() {
+		var r Run
+		if err := scanRun(rows, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r.Preview())
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) GetRun(ctx context.Context, tenant, id string) (*Run, error) {
+	var r Run
+	var trace []byte
+	row := p.db.QueryRowContext(ctx, `SELECT `+fmt.Sprintf(runColumns, "input", "output")+`, trace FROM ar_runs WHERE tenant_id=$1 AND id=$2`, tenant, id)
+	if err := scanRun(row, &r, &trace); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if len(trace) > 0 {
+		if err := json.Unmarshal(trace, &r.Trace); err != nil {
+			return nil, err
+		}
+	}
+	return &r, nil
+}
+
+func (p *Postgres) PruneRuns(ctx context.Context, before time.Time) (int64, error) {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM ar_runs WHERE started_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
