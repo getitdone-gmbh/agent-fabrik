@@ -244,6 +244,7 @@ tenant, reached with the admin token.
 | `GET/PUT/DELETE /v1/files/{path}` | per-tenant file storage (see [Files](#files)) |
 | `GET /v1/runs`, `GET /v1/runs/{id}` | run log (see [Run log and monitoring](#run-log-and-monitoring)) |
 | `GET /v1/stats[?agent=&days=7]` | totals, per day and per agent from the run log |
+| `GET /v1/sessions[?agent=&status=failed]` | conversations (runs grouped by `session_id`); `GET /v1/runs?session=<id>` returns one with full questions and answers |
 | `GET /v1/alerts` | problems the alert checker currently sees |
 | `POST /v1/tenants/{tenant}/hooks/{agent}[/{name}]` | tenant webhooks |
 | all routes under [API](#api) | scoped to the caller's tenant |

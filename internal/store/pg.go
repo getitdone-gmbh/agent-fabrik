@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS ar_runs (
   started_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ar_runs_tenant ON ar_runs(tenant_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS ar_runs_session ON ar_runs(tenant_id, session_id);
 CREATE INDEX IF NOT EXISTS ar_runs_started ON ar_runs(started_at);
 ALTER TABLE ar_runs ADD COLUMN IF NOT EXISTS error_kind text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS ar_alerts (
@@ -732,6 +734,9 @@ func scanRun(sc interface{ Scan(...any) error }, r *Run, extra ...any) error {
 
 func (p *Postgres) ListRuns(ctx context.Context, tenant string, f RunFilter) ([]Run, error) {
 	cols := fmt.Sprintf(runColumns, fmt.Sprintf("left(input, %d)", previewLen+1), fmt.Sprintf("left(output, %d)", previewLen+1))
+	if f.SessionID != "" {
+		cols = fmt.Sprintf(runColumns, "input", "output")
+	}
 	q := `SELECT ` + cols + ` FROM ar_runs WHERE true`
 	var args []any
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
@@ -740,6 +745,9 @@ func (p *Postgres) ListRuns(ctx context.Context, tenant string, f RunFilter) ([]
 	}
 	if f.Agent != "" {
 		q += ` AND agent=` + arg(f.Agent)
+	}
+	if f.SessionID != "" {
+		q += ` AND session_id=` + arg(f.SessionID)
 	}
 	switch f.Status {
 	case "":
@@ -763,7 +771,10 @@ func (p *Postgres) ListRuns(ctx context.Context, tenant string, f RunFilter) ([]
 		if err := scanRun(rows, &r); err != nil {
 			return nil, err
 		}
-		out = append(out, r.Preview())
+		if f.SessionID == "" {
+			r = r.Preview()
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
@@ -885,4 +896,44 @@ func (p *Postgres) PutAlert(ctx context.Context, a Alert) error {
 func (p *Postgres) DeleteAlert(ctx context.Context, tenant, agent, kind string) error {
 	_, err := p.db.ExecContext(ctx, `DELETE FROM ar_alerts WHERE tenant_id=$1 AND agent=$2 AND kind=$3`, tenant, agent, kind)
 	return err
+}
+
+func (p *Postgres) ListSessions(ctx context.Context, tenant string, f SessionFilter) ([]SessionSummary, error) {
+	q := `SELECT session_id, agent, count(*), count(*) FILTER (WHERE status <> 'ok'),
+		(array_agg(left(input, ` + fmt.Sprint(previewLen+1) + `) ORDER BY started_at))[1], min(started_at), max(started_at)
+		FROM ar_runs WHERE tenant_id=$1 AND session_id <> ''`
+	args := []any{tenant}
+	if f.Agent != "" {
+		args = append(args, f.Agent)
+		q += fmt.Sprintf(` AND agent=$%d`, len(args))
+	}
+	q += ` GROUP BY session_id, agent`
+	var having []string
+	if f.Failed {
+		having = append(having, `count(*) FILTER (WHERE status <> 'ok') > 0`)
+	}
+	if !f.Before.IsZero() {
+		args = append(args, f.Before)
+		having = append(having, fmt.Sprintf(`max(started_at) < $%d`, len(args)))
+	}
+	if len(having) > 0 {
+		q += ` HAVING ` + strings.Join(having, " AND ")
+	}
+	args = append(args, f.limit())
+	q += fmt.Sprintf(` ORDER BY max(started_at) DESC LIMIT $%d`, len(args))
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SessionSummary{}
+	for rows.Next() {
+		var s SessionSummary
+		if err := rows.Scan(&s.SessionID, &s.Agent, &s.Runs, &s.Failed, &s.FirstInput, &s.FirstAt, &s.LastAt); err != nil {
+			return nil, err
+		}
+		s.FirstInput = clip(s.FirstInput, previewLen)
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

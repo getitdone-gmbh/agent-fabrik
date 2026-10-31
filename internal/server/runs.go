@@ -14,7 +14,7 @@ import (
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	f := store.RunFilter{Agent: q.Get("agent"), Status: q.Get("status")}
+	f := store.RunFilter{Agent: q.Get("agent"), SessionID: q.Get("session"), Status: q.Get("status")}
 	switch f.Status {
 	case "", "failed", store.RunOK, store.RunMaxSteps, store.RunError:
 	default:
@@ -110,4 +110,32 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+}
+
+// listSessions lists conversations (runs grouped by session id).
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := store.SessionFilter{Agent: q.Get("agent"), Failed: q.Get("status") == "failed"}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "limit must be a number")
+			return
+		}
+		f.Limit = n
+	}
+	if v := q.Get("before"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "before must be an RFC 3339 time")
+			return
+		}
+		f.Before = t
+	}
+	sessions, err := s.m.Sessions(r.Context(), tenantOf(r), f)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }

@@ -927,11 +927,13 @@ async function runList(params) {
   if (!S.tenancy) { go("#/agents"); return; }
   mount(h("p", { class: "muted" }, "Loading…"));
   const agent = params.get("agent") || "";
+  const session = params.get("session") || "";
   const failed = params.get("status") === "failed";
   const all = S.admin && !S.actAs && params.get("tenant") === "*";
   const q = (before) => {
     const u = new URLSearchParams({ limit: "50" });
     if (agent) u.set("agent", agent);
+    if (session) u.set("session", session);
     if (failed) u.set("status", "failed");
     if (all) u.set("tenant", "*");
     if (before) u.set("before", before);
@@ -985,7 +987,8 @@ async function runList(params) {
   };
   mount(
     h("div", { class: "head" }, h("h1", {}, "Runs"), h("span", { class: "spacer" }), pick, onlyFailed, allTenants),
-    h("p", { class: "muted" }, "Every agent run with its question, tool calls and answer, kept for 30 days. Images are not stored."),
+    h("p", { class: "muted" }, session ? ["Conversation ", h("code", {}, session), ", newest first. ", h("a", { href: "#/runs" }, "All runs")]
+      : "Every agent run with its question, tool calls and answer, kept for " + ((S.me && S.me.run_log_days) || 30) + " days. Images are not stored."),
     alerts.filter((a) => !agent || a.agent === agent).map((a) => h("div", { class: "banner bad" },
       h("strong", {}, a.agent + ": "), a.summary,
       a.run_id && [" ", h("a", { href: "#/runs/" + enc(a.run_id) + (all ? "?tenant=" + enc(a.tenant_id) : "") }, "Show run")])),
@@ -1020,7 +1023,7 @@ async function runDetail(id, tenant) {
   fact("Started", when(r.started_at));
   fact("Status", statusBadge(r.status));
   fact("Source", r.source);
-  fact("Session", r.session_id && h("code", {}, r.session_id));
+  fact("Session", r.session_id && h("a", { href: "#/runs?session=" + enc(r.session_id) + (tenant ? "&tenant=" + enc(tenant) : "") }, h("code", {}, r.session_id), " (whole conversation)"));
   fact("Work", r.steps + " steps · " + r.tool_calls + (r.tool_calls === 1 ? " tool call" : " tool calls") + (r.tool_errors ? " · " + r.tool_errors + " failed" : "") + " · " + secs(r.duration_ms));
   fact("Tokens", fmt(r.input_tokens) + " in · " + fmt(r.output_tokens) + " out");
 

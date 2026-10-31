@@ -55,6 +55,9 @@ const (
 // RunFilter selects runs of one tenant ("" or "*" with AllTenants).
 type RunFilter struct {
 	Agent      string
+	// SessionID selects one conversation. Its runs come with the full
+	// question and answer (no preview), so the conversation can be read.
+	SessionID  string
 	Status     string    // "", ok, max_steps, error, or "failed" (anything but ok)
 	Before     time.Time // older than this (paging)
 	Limit      int
@@ -65,8 +68,10 @@ type RunFilter struct {
 type RunStore interface {
 	RecordRun(ctx context.Context, r Run) error
 	// ListRuns returns runs newest first, without trace and with input and
-	// output shortened to a preview.
+	// output shortened to a preview (full texts with f.SessionID).
 	ListRuns(ctx context.Context, tenant string, f RunFilter) ([]Run, error)
+	// ListSessions groups a tenant's runs by conversation, newest first.
+	ListSessions(ctx context.Context, tenant string, f SessionFilter) ([]SessionSummary, error)
 	GetRun(ctx context.Context, tenant, id string) (*Run, error)
 	// PruneRuns deletes runs started before t and returns how many.
 	PruneRuns(ctx context.Context, before time.Time) (int64, error)
@@ -245,6 +250,9 @@ func (f RunFilter) match(r *Run) bool {
 	if f.Agent != "" && r.Agent != f.Agent {
 		return false
 	}
+	if f.SessionID != "" && r.SessionID != f.SessionID {
+		return false
+	}
 	switch f.Status {
 	case "":
 	case "failed":
@@ -313,4 +321,64 @@ func statsOf(runs []Run, since time.Time) *RunStats {
 	}
 	sort.Slice(st.Agents, func(i, j int) bool { return st.Agents[i].Agent < st.Agents[j].Agent })
 	return st
+}
+
+// SessionFilter selects conversations.
+type SessionFilter struct {
+	Agent  string
+	Failed bool      // only conversations with at least one failed run
+	Before time.Time // last run older than this (paging)
+	Limit  int
+}
+
+func (f SessionFilter) limit() int { return RunFilter{Limit: f.Limit}.limit() }
+
+// SessionSummary is one conversation in the run log.
+type SessionSummary struct {
+	SessionID  string    `json:"session_id"`
+	Agent      string    `json:"agent"`
+	Runs       int64     `json:"runs"`
+	Failed     int64     `json:"failed"`
+	FirstInput string    `json:"first_input"` // preview of the opening question
+	FirstAt    time.Time `json:"first_at"`
+	LastAt     time.Time `json:"last_at"`
+}
+
+// sessionsOf groups runs (any order) the way both backends do.
+func sessionsOf(runs []Run, f SessionFilter) []SessionSummary {
+	by := map[string]*SessionSummary{}
+	for i := range runs {
+		r := &runs[i]
+		if r.SessionID == "" || (f.Agent != "" && r.Agent != f.Agent) {
+			continue
+		}
+		k := r.Agent + "/" + r.SessionID
+		s := by[k]
+		if s == nil {
+			s = &SessionSummary{SessionID: r.SessionID, Agent: r.Agent, FirstAt: r.StartedAt, LastAt: r.StartedAt, FirstInput: clip(r.Input, previewLen)}
+			by[k] = s
+		}
+		s.Runs++
+		if r.Status != RunOK {
+			s.Failed++
+		}
+		if r.StartedAt.Before(s.FirstAt) {
+			s.FirstAt, s.FirstInput = r.StartedAt, clip(r.Input, previewLen)
+		}
+		if r.StartedAt.After(s.LastAt) {
+			s.LastAt = r.StartedAt
+		}
+	}
+	out := []SessionSummary{}
+	for _, s := range by {
+		if (f.Failed && s.Failed == 0) || (!f.Before.IsZero() && !s.LastAt.Before(f.Before)) {
+			continue
+		}
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastAt.After(out[j].LastAt) })
+	if len(out) > f.limit() {
+		out = out[:f.limit()]
+	}
+	return out
 }
