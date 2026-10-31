@@ -105,3 +105,71 @@ func TestRunBound(t *testing.T) {
 		t.Error("Bound modified its input")
 	}
 }
+
+func TestRunStatsAndAlerts(t *testing.T) {
+	for name, mk := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			s := mk(t)
+			defer s.Close()
+			ctx := context.Background()
+			s.CreateTenant(ctx, Tenant{ID: "t1"})
+			day := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+			for i, r := range []Run{
+				{Agent: "a", Status: RunOK, DurationMS: 1000, InputTokens: 10, OutputTokens: 5, ToolCalls: 2, StartedAt: day},
+				{Agent: "a", Status: RunError, ErrorKind: "auth", DurationMS: 3000, StartedAt: day.Add(time.Hour)},
+				{Agent: "b", Status: RunMaxSteps, DurationMS: 2000, ToolCalls: 3, ToolErrors: 2, StartedAt: day.Add(24 * time.Hour)},
+				{Agent: "b", Status: RunOK, DurationMS: 500, StartedAt: day.Add(-48 * time.Hour)}, // before since
+			} {
+				r.ID, r.TenantID = fmt.Sprint("r", i), "t1"
+				if err := s.RecordRun(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			st, err := s.RunStats(ctx, "t1", "", day.Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Totals.Runs != 3 || st.Totals.OK != 1 || st.Totals.Failed != 2 || st.Totals.ToolErrors != 2 || st.Totals.AvgMS != 2000 || st.Totals.P95MS != 3000 {
+				t.Errorf("totals: %+v", st.Totals)
+			}
+			if len(st.Days) != 2 || st.Days[0].Date != "2026-10-30" || st.Days[0].Runs != 2 || st.Days[1].Runs != 1 {
+				t.Errorf("days: %+v", st.Days)
+			}
+			if len(st.Agents) != 2 || st.Agents[0].Agent != "a" || st.Agents[1].Failed != 1 {
+				t.Errorf("agents: %+v", st.Agents)
+			}
+			if st, _ := s.RunStats(ctx, "t1", "b", day.Add(-time.Hour)); st.Totals.Runs != 1 {
+				t.Errorf("agent filter: %+v", st.Totals)
+			}
+			if st, _ := s.RunStats(ctx, "other", "", day.Add(-time.Hour)); st.Totals.Runs != 0 || st.Days == nil {
+				t.Errorf("other tenant: %+v", st)
+			}
+
+			hs, err := s.RunHealth(ctx, day.Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, h := range hs {
+				if h.Agent == "a" && (h.Runs != 2 || h.AuthErrors != 1 || h.LastFailedID != "r1") {
+					t.Errorf("health a: %+v", h)
+				}
+			}
+
+			a := Alert{TenantID: "t1", Agent: "a", Kind: "llm_auth", Severity: "critical", Summary: "x", RunID: "r1", Since: day, LastSeen: day}
+			s.PutAlert(ctx, a)
+			a.Summary, a.LastSeen, a.Since = "y", day.Add(time.Hour), day.Add(time.Hour) // since must stay
+			s.PutAlert(ctx, a)
+			l, _ := s.ListAlerts(ctx, "t1", false)
+			if len(l) != 1 || l[0].Summary != "y" || !l[0].Since.Equal(day) {
+				t.Errorf("alerts: %+v", l)
+			}
+			if l, _ := s.ListAlerts(ctx, "other", false); len(l) != 0 {
+				t.Errorf("alert visible to another tenant")
+			}
+			s.DeleteAlert(ctx, "t1", "a", "llm_auth")
+			if l, _ := s.ListAlerts(ctx, "", true); len(l) != 0 {
+				t.Errorf("delete: %+v", l)
+			}
+		})
+	}
+}

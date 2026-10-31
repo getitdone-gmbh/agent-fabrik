@@ -73,3 +73,41 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, run)
 }
+
+// getStats aggregates the run log: totals, per day, per agent.
+func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	days := 7
+	if v := q.Get("days"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 30 {
+			writeError(w, http.StatusBadRequest, "days must be between 1 and 30")
+			return
+		}
+		days = n
+	}
+	// Whole UTC days, so the first bar of a chart is not a partial day.
+	now := time.Now().UTC()
+	since := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1-days)
+	st, err := s.m.RunStats(r.Context(), tenantOf(r), q.Get("agent"), since)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// listAlerts returns the problems the alert checker currently sees.
+func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
+	all := r.URL.Query().Get("tenant") == "*"
+	if all && !isAdmin(r) {
+		writeError(w, http.StatusForbidden, "admin token required")
+		return
+	}
+	alerts, err := s.m.Alerts(r.Context(), tenantOf(r), all)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+}

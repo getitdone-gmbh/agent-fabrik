@@ -937,7 +937,12 @@ async function runList(params) {
     if (before) u.set("before", before);
     return "/v1/runs?" + u;
   };
-  const [{ runs }, { agents }] = await Promise.all([api("GET", q()), api("GET", "/v1/agents").catch(() => ({ agents: [] }))]);
+  const [{ runs }, { agents }, stats, { alerts }] = await Promise.all([
+    api("GET", q()),
+    api("GET", "/v1/agents").catch(() => ({ agents: [] })),
+    all ? Promise.resolve(null) : api("GET", "/v1/stats?days=7" + (agent ? "&agent=" + enc(agent) : "")).catch(() => null),
+    api("GET", "/v1/alerts" + (all ? "?tenant=*" : "")).catch(() => ({ alerts: [] })),
+  ]);
   const setParam = (k, v) => {
     const u = new URLSearchParams(params);
     if (v) u.set(k, v); else u.delete(k);
@@ -981,6 +986,10 @@ async function runList(params) {
   mount(
     h("div", { class: "head" }, h("h1", {}, "Runs"), h("span", { class: "spacer" }), pick, onlyFailed, allTenants),
     h("p", { class: "muted" }, "Every agent run with its question, tool calls and answer, kept for 30 days. Images are not stored."),
+    alerts.filter((a) => !agent || a.agent === agent).map((a) => h("div", { class: "banner bad" },
+      h("strong", {}, a.agent + ": "), a.summary,
+      a.run_id && [" ", h("a", { href: "#/runs/" + enc(a.run_id) + (all ? "?tenant=" + enc(a.tenant_id) : "") }, "Show run")])),
+    stats && statsStrip(stats.totals),
     runs.length
       ? h("table", { class: "runs" },
         h("thead", {}, h("tr", {}, h("th", {}, "When"), all && h("th", {}, "Tenant"), h("th", {}, "Agent"), h("th", {}, "Status"), h("th", {}, "Question / answer"),
@@ -988,6 +997,17 @@ async function runList(params) {
         body)
       : h("div", { class: "empty" }, h("p", {}, failed ? "No problems recorded." : "No runs recorded yet.")),
     more);
+}
+
+function statsStrip(t) {
+  const rate = t.runs ? Math.round((t.ok / t.runs) * 100) + " %" : "–";
+  const stat = (k, v, bad) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" + (bad ? " error" : "") }, v));
+  return h("div", { class: "stats" },
+    stat("Runs (7 days)", fmt(t.runs)),
+    stat("Successful", rate, t.runs > 0 && t.ok * 2 < t.runs),
+    stat("Tool errors", fmt(t.tool_errors), t.tool_errors > 0),
+    stat("Time (avg / p95)", secs(t.avg_ms) + " / " + secs(t.p95_ms)),
+    stat("Tokens", fmt(t.input_tokens + t.output_tokens)));
 }
 
 async function runDetail(id, tenant) {

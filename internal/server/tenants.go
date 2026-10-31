@@ -34,6 +34,8 @@ import (
 //   GET    /v1/keys, POST /v1/keys {"name"}, DELETE /v1/keys/{id}
 //   GET    /v1/files[?prefix=], GET/PUT/DELETE /v1/files/{path}   (raw bytes)
 //   GET    /v1/runs[?agent=&status=&before=&limit=], GET /v1/runs/{id}   run log
+//   GET    /v1/stats[?agent=&days=7]      totals, per day, per agent
+//   GET    /v1/alerts                     problems the alert checker sees
 //   admin: /v1/admin/tenants[/{id}[/keys]], /v1/admin/stats
 
 var kindPaths = map[string]string{"providers": store.KindProvider, "connectors": store.KindConnector, "agents": store.KindAgent}
@@ -57,6 +59,8 @@ func (s *Server) tenantRoutes(mux *http.ServeMux, h func(string, http.HandlerFun
 	h("DELETE /v1/files/{path...}", s.deleteFile)
 	h("GET /v1/runs", s.listRuns)
 	h("GET /v1/runs/{id}", s.getRun)
+	h("GET /v1/stats", s.getStats)
+	h("GET /v1/alerts", s.listAlerts)
 
 	a := func(pattern string, fn http.HandlerFunc) { h(pattern, s.adminOnly(fn)) }
 	a("GET /v1/admin/tenants", s.adminListTenants)

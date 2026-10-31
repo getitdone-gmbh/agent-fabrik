@@ -22,6 +22,7 @@ type Mem struct {
 	data     memData
 	sessions agent.Store
 	runs     map[string][]Run // per tenant, oldest first; not snapshotted
+	alerts   map[string]Alert // tenant/agent/kind
 	dirty    chan struct{}
 	done     chan struct{}
 	wg       sync.WaitGroup
@@ -47,6 +48,7 @@ func NewMem(path string, sessionTTL time.Duration, maxSessions int) (*Mem, error
 		path:     path,
 		sessions: agent.NewMemoryStore(sessionTTL, maxSessions),
 		runs:     map[string][]Run{},
+		alerts:   map[string]Alert{},
 		dirty:    make(chan struct{}, 1),
 		done:     make(chan struct{}),
 		data: memData{
@@ -171,6 +173,11 @@ func (m *Mem) DeleteTenant(_ context.Context, id string) error {
 	delete(m.data.Usage, id)
 	delete(m.data.Files, id)
 	delete(m.runs, id)
+	for k, a := range m.alerts {
+		if a.TenantID == id {
+			delete(m.alerts, k)
+		}
+	}
 	for h, k := range m.data.Keys {
 		if k.TenantID == id {
 			delete(m.data.Keys, h)
@@ -508,4 +515,73 @@ func (m *Mem) PruneRuns(_ context.Context, before time.Time) (int64, error) {
 		}
 	}
 	return n, nil
+}
+
+func (m *Mem) RunStats(_ context.Context, tenant, agent string, since time.Time) (*RunStats, error) {
+	m.mu.RLock()
+	var sel []Run
+	for _, r := range m.runs[tenant] {
+		if !r.StartedAt.Before(since) && (agent == "" || r.Agent == agent) {
+			sel = append(sel, r)
+		}
+	}
+	m.mu.RUnlock()
+	return statsOf(sel, since), nil
+}
+
+func (m *Mem) RunHealth(_ context.Context, since time.Time) ([]AgentHealth, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	by := map[string]*AgentHealth{}
+	var out []AgentHealth
+	for t, l := range m.runs {
+		for i := len(l) - 1; i >= 0; i-- { // newest first, for LastFailedID
+			r := &l[i]
+			if r.StartedAt.Before(since) {
+				continue
+			}
+			k := t + "/" + r.Agent
+			if by[k] == nil {
+				by[k] = &AgentHealth{TenantID: t, Agent: r.Agent}
+			}
+			r.health(by[k])
+		}
+	}
+	for _, h := range by {
+		out = append(out, *h)
+	}
+	return out, nil
+}
+
+func alertKey(tenant, agent, kind string) string { return tenant + "/" + agent + "/" + kind }
+
+func (m *Mem) ListAlerts(_ context.Context, tenant string, all bool) ([]Alert, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []Alert{}
+	for _, a := range m.alerts {
+		if all || a.TenantID == tenant {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Since.After(out[j].Since) })
+	return out, nil
+}
+
+func (m *Mem) PutAlert(_ context.Context, a Alert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := alertKey(a.TenantID, a.Agent, a.Kind)
+	if old, ok := m.alerts[k]; ok {
+		a.Since = old.Since // an alert keeps the time it started
+	}
+	m.alerts[k] = a
+	return nil
+}
+
+func (m *Mem) DeleteAlert(_ context.Context, tenant, agent, kind string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.alerts, alertKey(tenant, agent, kind))
+	return nil
 }

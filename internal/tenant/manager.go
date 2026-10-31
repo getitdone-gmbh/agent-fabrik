@@ -22,6 +22,7 @@ import (
 	"github.com/getitdone-gmbh/agent-fabrik/internal/config"
 	"github.com/getitdone-gmbh/agent-fabrik/internal/llm"
 	"github.com/getitdone-gmbh/agent-fabrik/internal/netguard"
+	"github.com/getitdone-gmbh/agent-fabrik/internal/notify"
 	"github.com/getitdone-gmbh/agent-fabrik/internal/store"
 	"github.com/getitdone-gmbh/agent-fabrik/internal/tools"
 	"github.com/getitdone-gmbh/agent-fabrik/internal/triggers"
@@ -68,6 +69,9 @@ type Manager struct {
 	leader   atomic.Bool      // only the leader schedules triggers
 	synced   map[string]int64 // tenant version last pushed to the scheduler
 	tick     time.Duration
+
+	notifier      notify.Notifier // nil: no owner notifications
+	notifyLimiter dayLimiter
 }
 
 type cachedTenant struct {
@@ -125,6 +129,9 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, system *app.Ap
 	}
 	if cfg.Tenancy.ExternalAuth.Enabled {
 		m.external = newUserinfoAuth(cfg.Tenancy.ExternalAuth)
+	}
+	if n := cfg.Tenancy.Notify; n.URL != "" {
+		m.notifier = &notify.Webhook{URL: n.URL, Token: n.Token}
 	}
 	if err := netguard.Allow(cfg.Tenancy.AllowNetworks); err != nil {
 		return nil, err
@@ -522,6 +529,7 @@ func (m *Manager) Acquire(ctx context.Context, id string) (*app.App, func(), err
 		Store:              agent.Prefixed(m.st.Sessions(), id+"/"),
 		MaxConcurrentRuns:  max(config.PerReplica(lim.MaxConcurrentRuns, m.cfg.Tenancy.Replicas), 1),
 		Files:              m.filesFor(t),
+		Extra:              m.extraConnectors(id),
 		ConnectorsOptional: true,
 		MaxSteps:           lim.MaxSteps,
 	})
@@ -612,7 +620,7 @@ func (m *Manager) Janitor(ctx context.Context) {
 	defer t.Stop()
 	versions := map[string]int64{}
 	leader := false
-	var pruned time.Time
+	var pruned, checked time.Time
 	for {
 		m.sweepIdle()
 		if m.Enabled() {
@@ -638,6 +646,10 @@ func (m *Manager) Janitor(ctx context.Context) {
 				if time.Since(pruned) > time.Hour {
 					m.pruneRuns(ctx)
 					pruned = time.Now()
+				}
+				if time.Since(checked) >= alertInterval {
+					m.checkAlerts(ctx)
+					checked = time.Now()
 				}
 			}
 		}
@@ -718,6 +730,7 @@ func (m *Manager) Stats() map[string]any {
 func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.RunInput) (*agent.RunResult, error) {
 	rec := m.newRecorder(tenantID, agentName, in)
 	in.OnEvent = rec.wrap(in.OnEvent)
+	ctx = tools.WithCall(ctx, tools.Call{RunID: rec.run.ID})
 	res, err := m.run(ctx, tenantID, agentName, in)
 	m.finish(rec, res, err)
 	return res, err
@@ -834,3 +847,17 @@ func (m *Manager) Start(ctx context.Context, wg *sync.WaitGroup) {
 	go func() { defer wg.Done(); m.sched.Run(ctx) }()
 	go func() { defer wg.Done(); m.Janitor(ctx) }()
 }
+
+// extraConnectors are the built-in connectors that need the manager.
+func (m *Manager) extraConnectors(tenantID string) []tools.Connector {
+	if m.notifier == nil || tenantID == System {
+		return nil
+	}
+	return []tools.Connector{&notifyTool{m: m, tenant: tenantID}}
+}
+
+// SetNotifier replaces the notifier (tests).
+func (m *Manager) SetNotifier(n notify.Notifier) { m.notifier = n }
+
+// CheckAlerts runs one round of the alert checker now (tests, admin).
+func (m *Manager) CheckAlerts(ctx context.Context) { m.checkAlerts(ctx) }
