@@ -83,6 +83,14 @@ func isAdmin(r *http.Request) bool {
 	return ok
 }
 
+// MetricsHandler serves the Prometheus metrics.
+func MetricsHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		metrics.Write(w)
+	})
+}
+
 // New builds the HTTP handler.
 func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler {
 	s := &Server{m: m, cfg: cfg, bg: bg}
@@ -92,10 +100,9 @@ func New(bg context.Context, m *tenant.Manager, cfg *config.Config) http.Handler
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		metrics.Write(w)
-	})
+	if cfg.Server.MetricsAddr == "" {
+		mux.Handle("GET /metrics", MetricsHandler())
+	}
 	h := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, s.auth(fn)) }
 	h("GET /v1/agents", s.listAgents)
 	h("GET /v1/agents/{name}", s.getAgent)
@@ -745,7 +752,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		b.WriteString("\n\nEvent: " + ev)
 	}
 	b.WriteString("\n\nContent-Type: " + r.Header.Get("Content-Type") + "\nPayload:\n" + payload)
-	in := agent.RunInput{Input: b.String(), SessionID: t.Session}
+	in := agent.RunInput{Input: b.String(), SessionID: t.Session, Source: "webhook"}
 	metrics.TriggerRuns.Add(1)
 	if t.Async {
 		go func() {
@@ -799,7 +806,7 @@ func (s *Server) mcpTools(ctx context.Context, id string) []mcp.ServerTool {
 				if err := tools.Decode(args, &a); err != nil {
 					return "", err
 				}
-				res, err := s.m.Run(ctx, id, name, agent.RunInput{Input: a.Input, SessionID: a.SessionID})
+				res, err := s.m.Run(ctx, id, name, agent.RunInput{Input: a.Input, SessionID: a.SessionID, Source: "mcp"})
 				if err != nil {
 					return "", err
 				}

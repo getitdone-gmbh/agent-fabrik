@@ -48,6 +48,7 @@ tenants with 10,000 agents and 6,000 triggers idle at **35 MB of RAM**.
 [Web UI](#web-ui) ·
 [API](#api) ·
 [Files](#files) ·
+[Run log and monitoring](#run-log-and-monitoring) ·
 [Shell](#shell) ·
 [Email agents](#email-agents) ·
 [Deploy](#deploy) ·
@@ -241,6 +242,7 @@ tenant, reached with the admin token.
 | `GET /v1/tools` | per connector: type, status (`ok`/`unavailable` + error) and the tool ids (`connector.tool`) agents can list in `tools` |
 | `GET/POST /v1/keys`, `DELETE /v1/keys/{id}` | runtime API keys (`ark_...`, stored hashed); `POST {"name","scope":"run","agents":[...]}` issues a key that can only run (those) agents, for app backends |
 | `GET/PUT/DELETE /v1/files/{path}` | per-tenant file storage (see [Files](#files)) |
+| `GET /v1/runs`, `GET /v1/runs/{id}` | run log (see [Run log and monitoring](#run-log-and-monitoring)) |
 | `POST /v1/tenants/{tenant}/hooks/{agent}[/{name}]` | tenant webhooks |
 | all routes under [API](#api) | scoped to the caller's tenant |
 
@@ -267,6 +269,8 @@ admin token. In the UI you can:
 - create, edit and delete agents in a form or as JSON;
 - add providers (the API key is stored as an encrypted secret), connectors
   (from YAML templates), secrets and API keys;
+- browse the run log: every run with its question, tool calls and answer,
+  filtered by agent or to the ones that went wrong;
 - as admin, switch between the system agents and any tenant.
 
 The page is static: plain HTML, CSS and JS embedded in the binary, with no
@@ -296,7 +300,7 @@ All `/v1/*` and `/mcp` routes require `Authorization: Bearer <token>` (or
 
 | Route | Purpose |
 |---|---|
-| `GET /healthz`, `/readyz`, `/metrics` | health, Prometheus metrics |
+| `GET /healthz`, `/readyz`, `/metrics` | health, Prometheus metrics (`/metrics` on `server.metrics_addr` when set) |
 | `GET /v1/agents`, `GET /v1/agents/{name}` | list / describe agents and their tools |
 | `POST /v1/agents/{name}/run` | `{"input": "...", "images": [...], "session_id": "...", "stream": false}` returns `{output, session_id, steps, tool_calls, usage, ...}` |
 | same with `"stream": true` or `Accept: text/event-stream` | SSE events `step`, `tool_call`, `tool_result`, `message`, `result`, `error` |
@@ -364,6 +368,46 @@ curl $RT/v1/files/reports/2026-09.md -H "Authorization: Bearer $KEY"
 
 In multi-tenant mode there is deliberately no shell and no host file
 system, because agents of many tenants share one process.
+
+## Run log and monitoring
+
+With tenancy every run that reaches the model is recorded: agent, source
+(`api`, `chat`, `mcp`, `webhook`, `cron`, `interval`, `imap`), question,
+each tool call with its arguments and result, the answer or the error,
+steps, tokens and duration. That is what you look at when an agent does not
+do what it should.
+
+```bash
+curl "$RT/v1/runs?agent=support&status=failed" -H "Authorization: Bearer $KEY"
+curl $RT/v1/runs/run_3f2a... -H "Authorization: Bearer $KEY"
+```
+
+- `status` is `ok`, `max_steps`, `error`, or `failed` for both of the
+  latter. Page with `before=<started_at of the last run>`, up to `limit=200`.
+- Records are kept for `tenancy.run_log_days` (default 30, `-1` turns the
+  log off). Images are not stored, long texts are shortened (16 KB for
+  question and answer, 4 KB per tool result).
+- The log holds your users' conversations. A run key (`scope: "run"`, the
+  one a website backend holds) cannot read it; tenant admin keys and the
+  operator can. The admin token sees every tenant with `?tenant=*`.
+- Runs refused before they start (rate limit, quota) are not logged, only
+  counted.
+
+`/metrics` has per-agent counters for alerts and dashboards:
+
+| Metric | Labels |
+|---|---|
+| `agent_runs_total` | `tenant`, `agent`, `source`, `status` |
+| `agent_run_duration_seconds` (histogram) | `tenant`, `agent` |
+| `agent_tool_results_total` | `tenant`, `agent`, `tool`, `result` (`ok`/`error`) |
+| `agent_tokens_total` | `tenant`, `agent`, `direction` |
+| `agent_llm_errors_total` | `provider`, `kind` (`auth`, `throttled`, `server`, `client`, `timeout`, `network`) |
+| `agent_runs_rejected_total` | `tenant`, `reason` (`rate_limit`, `quota`, `disabled`) |
+
+These name tenants and agents. Behind a public ingress set
+`server.metrics_addr: ":9091"`: `/metrics` then moves to that port and the
+API port stops serving it. Each metric keeps at most 2000 label sets; beyond
+that new ones are counted as `other`.
 
 ## Shell
 

@@ -34,7 +34,7 @@ func backends(t *testing.T) map[string]func(t *testing.T) Store {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p.db.Exec(`TRUNCATE ar_tenants, ar_sessions CASCADE`)
+			p.db.Exec(`TRUNCATE ar_tenants, ar_sessions, ar_runs CASCADE`)
 			return p
 		}
 	}

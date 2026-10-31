@@ -200,3 +200,18 @@ textarea.code { min-height: 360px; white-space: pre; tab-size: 2; }
   .trigger { grid-template-columns: 1fr; }
   .chat { height: 70vh; }
 }
+
+/* run log */
+.badge.good { color: var(--ok); border-color: var(--ok); }
+.badge.bad { color: var(--danger); border-color: var(--danger); }
+table.runs tr.link { cursor: pointer; }
+table.runs tr.link:hover td { background: var(--soft); }
+table.runs td { vertical-align: top; }
+table.runs .preview { max-width: 420px; overflow-wrap: anywhere; }
+table.runs .preview a { color: inherit; text-decoration: none; }
+.num { text-align: right; }
+.nowrap { white-space: nowrap; }
+.small { font-size: 12px; }
+.card.trace { padding: 0; }
+.card.trace .log { max-height: 70vh; }
+.head label.check { margin: 0; font-size: 13px; }

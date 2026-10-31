@@ -33,6 +33,7 @@ import (
 //   DELETE /v1/secrets/{name}
 //   GET    /v1/keys, POST /v1/keys {"name"}, DELETE /v1/keys/{id}
 //   GET    /v1/files[?prefix=], GET/PUT/DELETE /v1/files/{path}   (raw bytes)
+//   GET    /v1/runs[?agent=&status=&before=&limit=], GET /v1/runs/{id}   run log
 //   admin: /v1/admin/tenants[/{id}[/keys]], /v1/admin/stats
 
 var kindPaths = map[string]string{"providers": store.KindProvider, "connectors": store.KindConnector, "agents": store.KindAgent}
@@ -54,6 +55,8 @@ func (s *Server) tenantRoutes(mux *http.ServeMux, h func(string, http.HandlerFun
 	h("GET /v1/files/{path...}", s.getFile)
 	h("PUT /v1/files/{path...}", s.putFile)
 	h("DELETE /v1/files/{path...}", s.deleteFile)
+	h("GET /v1/runs", s.listRuns)
+	h("GET /v1/runs/{id}", s.getRun)
 
 	a := func(pattern string, fn http.HandlerFunc) { h(pattern, s.adminOnly(fn)) }
 	a("GET /v1/admin/tenants", s.adminListTenants)

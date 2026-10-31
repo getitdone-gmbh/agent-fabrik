@@ -44,6 +44,8 @@ func Write(w io.Writer) {
 	counter("agent_trigger_runs_total", "Runs started by triggers (cron, imap, webhook).", TriggerRuns.Load())
 	counter("agent_http_requests_total", "HTTP API requests.", HTTPRequests.Load())
 
+	writeVecs(w)
+
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	gauge("process_heap_bytes", "Go heap in use.", float64(ms.HeapInuse))

@@ -140,11 +140,21 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() {
 		log.Info("listening", "addr", cfg.Server.Addr, "version", version, "system_agents", len(cfg.Agents), "multi_tenant", cfg.Tenancy.Enabled)
 		errc <- srv.ListenAndServe()
 	}()
+	var msrv *http.Server
+	if cfg.Server.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", server.MetricsHandler())
+		msrv = &http.Server{Addr: cfg.Server.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			log.Info("serving metrics", "addr", cfg.Server.MetricsAddr)
+			errc <- msrv.ListenAndServe()
+		}()
+	}
 	select {
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {
@@ -155,6 +165,9 @@ func run() error {
 		sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)
+		if msrv != nil {
+			_ = msrv.Shutdown(sctx)
+		}
 	}
 	wg.Wait()
 	return nil

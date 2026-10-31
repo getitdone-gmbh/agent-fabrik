@@ -612,6 +612,7 @@ func (m *Manager) Janitor(ctx context.Context) {
 	defer t.Stop()
 	versions := map[string]int64{}
 	leader := false
+	var pruned time.Time
 	for {
 		m.sweepIdle()
 		if m.Enabled() {
@@ -634,6 +635,10 @@ func (m *Manager) Janitor(ctx context.Context) {
 			m.leader.Store(isLeader)
 			if leader {
 				m.syncChanged(ctx, versions)
+				if time.Since(pruned) > time.Hour {
+					m.pruneRuns(ctx)
+					pruned = time.Now()
+				}
 			}
 		}
 		select {
@@ -708,8 +713,17 @@ func (m *Manager) Stats() map[string]any {
 
 // ---------- running ----------
 
-// Run executes an agent of a tenant, enforcing its limits.
+// Run executes an agent of a tenant, enforcing its limits, and records the
+// run in the run log and the metrics.
 func (m *Manager) Run(ctx context.Context, tenantID, agentName string, in agent.RunInput) (*agent.RunResult, error) {
+	rec := m.newRecorder(tenantID, agentName, in)
+	in.OnEvent = rec.wrap(in.OnEvent)
+	res, err := m.run(ctx, tenantID, agentName, in)
+	m.finish(rec, res, err)
+	return res, err
+}
+
+func (m *Manager) run(ctx context.Context, tenantID, agentName string, in agent.RunInput) (*agent.RunResult, error) {
 	t, err := m.Tenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
