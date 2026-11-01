@@ -91,9 +91,16 @@ type RunStore interface {
 
 // RunTotals sums up runs.
 type RunTotals struct {
-	Runs         int64 `json:"runs"`
-	OK           int64 `json:"ok"`
-	Failed       int64 `json:"failed"` // error or max_steps
+	Runs   int64 `json:"runs"`
+	OK     int64 `json:"ok"`
+	Failed int64 `json:"failed"` // error or max_steps
+	// What OK and Failed are made of, so a page can say what "successful"
+	// means: OK = Clean + OKToolErrors, Failed = MaxSteps + ModelErrors + OtherErrors.
+	Clean        int64 `json:"clean"`          // answered, every tool call worked
+	OKToolErrors int64 `json:"ok_tool_errors"` // answered although a tool call failed
+	MaxSteps     int64 `json:"max_steps"`      // stopped at the step limit, no answer
+	ModelErrors  int64 `json:"model_errors"`   // the model rejected the key, was unreachable or throttled
+	OtherErrors  int64 `json:"other_errors"`
 	ToolCalls    int64 `json:"tool_calls"`
 	ToolErrors   int64 `json:"tool_errors"`
 	InputTokens  int64 `json:"input_tokens"`
@@ -175,10 +182,25 @@ func (r *Run) health(h *AgentHealth) {
 
 func (t *RunTotals) add(r *Run) {
 	t.Runs++
-	if r.Status == RunOK {
+	switch {
+	case r.Status == RunOK:
 		t.OK++
-	} else {
+		if r.ToolErrors > 0 {
+			t.OKToolErrors++
+		} else {
+			t.Clean++
+		}
+	case r.Status == RunMaxSteps:
 		t.Failed++
+		t.MaxSteps++
+	default:
+		t.Failed++
+		switch r.ErrorKind {
+		case "auth", "network", "timeout", "server", "throttled":
+			t.ModelErrors++
+		default:
+			t.OtherErrors++
+		}
 	}
 	t.ToolCalls += int64(r.ToolCalls)
 	t.ToolErrors += int64(r.ToolErrors)

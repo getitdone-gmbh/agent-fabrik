@@ -217,3 +217,22 @@ func TestSessions(t *testing.T) {
 		})
 	}
 }
+
+func TestRunTotalsBreakdown(t *testing.T) {
+	now := time.Now()
+	st := statsOf([]Run{
+		{Agent: "a", Status: RunOK, StartedAt: now},
+		{Agent: "a", Status: RunOK, ToolCalls: 2, ToolErrors: 1, StartedAt: now},
+		{Agent: "a", Status: RunMaxSteps, StartedAt: now},
+		{Agent: "a", Status: RunError, ErrorKind: "timeout", StartedAt: now},
+		{Agent: "a", Status: RunError, ErrorKind: "throttled", StartedAt: now},
+		{Agent: "a", Status: RunError, ErrorKind: "client", StartedAt: now},
+	}, now.Add(-time.Hour))
+	got := st.Totals
+	if got.OK != 2 || got.Clean != 1 || got.OKToolErrors != 1 || got.Failed != 4 || got.MaxSteps != 1 || got.ModelErrors != 2 || got.OtherErrors != 1 {
+		t.Errorf("breakdown: %+v", got)
+	}
+	if got.OK != got.Clean+got.OKToolErrors || got.Failed != got.MaxSteps+got.ModelErrors+got.OtherErrors {
+		t.Errorf("parts do not add up: %+v", got)
+	}
+}
