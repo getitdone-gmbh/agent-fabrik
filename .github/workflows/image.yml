@@ -1,7 +1,7 @@
 name: image
 
 # Same path as itdone-chat: test, build the image, push it to GHCR and pin
-# the digest into the ArgoCD-managed manifest in itdone-cloud. The rollout
+# the digest into the ArgoCD-managed manifest in run-zero. The rollout
 # happens through Git (infra/k8s/envs/itdone-cloud/itdone-agentd/).
 on:
   push:
@@ -79,13 +79,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Needs GITOPS_TOKEN: a fine-grained PAT limited to itdone-cloud with
+      # Needs GITOPS_TOKEN: a fine-grained PAT limited to run-zero with
       # Contents: Read and write (same secret as in itdone-chat).
       - name: Checkout GitOps repo
         if: github.ref == 'refs/heads/main'
         uses: actions/checkout@v6
         with:
-          repository: getitdone-gmbh/itdone-cloud
+          repository: getitdone-gmbh/run-zero
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
 
